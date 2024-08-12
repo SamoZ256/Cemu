@@ -260,8 +260,6 @@ public:
     void BindStageResources(MTL::RenderCommandEncoder* renderCommandEncoder, LatteDecompilerShader* shader);
     void RebindRenderState(MTL::RenderCommandEncoder* renderCommandEncoder);
 
-    void ClearColorTextureInternal(MTL::Texture* mtlTexture, sint32 sliceIndex, sint32 mipIndex, float r, float g, float b, float a);
-
     // Getters
     MTL::Buffer* GetTextureReadbackBuffer()
     {

@@ -66,6 +66,21 @@ MTL::Texture* LatteTextureViewMtl::GetSwizzledView(uint32 gpuSamplerSwizzle)
     return texture;
 }
 
+void LatteTextureViewMtl::Flush()
+{
+    m_baseTexture->Flush(this->firstMip, this->firstSlice);
+}
+
+void LatteTextureViewMtl::FlushRegion(uint32 firstMip, uint32 mipCount, uint32 firstSlice, uint32 sliceCount)
+{
+    m_baseTexture->FlushRegion(this->firstMip + firstMip, mipCount, this->firstSlice + firstSlice, sliceCount);
+}
+
+bool LatteTextureViewMtl::FlushRegionAtRenderPassBegin(MTL::RenderPassDescriptor* renderPassDescriptor, uint32 colorAttachmentIndex, bool hasStencil)
+{
+    return m_baseTexture->FlushRegionAtRenderPassBegin(this->firstMip, this->firstSlice, renderPassDescriptor, colorAttachmentIndex);
+}
+
 MTL::Texture* LatteTextureViewMtl::CreateSwizzledView(uint32 gpuSamplerSwizzle)
 {
     uint32 compSelR = (gpuSamplerSwizzle >> 16) & 0x7;

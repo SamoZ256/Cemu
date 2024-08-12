@@ -17,6 +17,7 @@
 #include "Cemu/Logging/CemuDebugLogging.h"
 #include "Common/precompiled.h"
 #include "Metal/MTLPixelFormat.hpp"
+#include "Metal/MTLRenderCommandEncoder.hpp"
 #include "gui/guiWrapper.h"
 
 #define COMMIT_TRESHOLD 256
@@ -159,7 +160,19 @@ void MetalRenderer::ClearColorbuffer(bool padView)
     if (!AcquireNextDrawable(!padView))
         return;
 
-    ClearColorTextureInternal(m_drawable->texture(), 0, 0, 0.0f, 0.0f, 0.0f, 0.0f);
+    auto mtlTexture = m_drawable->texture();
+
+    MTL::RenderPassDescriptor* renderPassDescriptor = MTL::RenderPassDescriptor::alloc()->init();
+    auto colorAttachment = renderPassDescriptor->colorAttachments()->object(0);
+    colorAttachment->setTexture(mtlTexture);
+    colorAttachment->setClearColor(MTL::ClearColor(0.0f, 0.0f, 0.0f, 0.0f));
+    colorAttachment->setLoadAction(MTL::LoadActionClear);
+    colorAttachment->setStoreAction(MTL::StoreActionStore);
+
+    MTL::Texture* colorRenderTargets[8] = {nullptr};
+    colorRenderTargets[0] = mtlTexture;
+    GetRenderCommandEncoder(renderPassDescriptor, colorRenderTargets, nullptr, true);
+    renderPassDescriptor->release();
 }
 
 void MetalRenderer::DrawEmptyFrame(bool mainWindow)
@@ -203,7 +216,9 @@ void MetalRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutput
 	if (clearBackground)
 		ClearColorbuffer(padView);
 
-    MTL::Texture* presentTexture = static_cast<LatteTextureViewMtl*>(texView)->GetRGBAView();
+	auto textureMtl = static_cast<LatteTextureViewMtl*>(texView);
+	textureMtl->FlushRegion(0, 1, 0, 1);
+    MTL::Texture* presentTexture = textureMtl->GetRGBAView();
 
     // Create render pass
     MTL::RenderPassDescriptor* renderPassDescriptor = MTL::RenderPassDescriptor::alloc()->init();
@@ -303,60 +318,28 @@ TextureDecoder* MetalRenderer::texture_chooseDecodedFormat(Latte::E_GX2SURFFMT f
 void MetalRenderer::texture_clearSlice(LatteTexture* hostTexture, sint32 sliceIndex, sint32 mipIndex)
 {
     if (hostTexture->isDepth)
-    {
         texture_clearDepthSlice(hostTexture, sliceIndex, mipIndex, true, hostTexture->hasStencil, 0.0f, 0);
-    }
     else
-    {
         texture_clearColorSlice(hostTexture, sliceIndex, mipIndex, 0.0f, 0.0f, 0.0f, 0.0f);
-    }
 }
 
 void MetalRenderer::texture_loadSlice(LatteTexture* hostTexture, sint32 width, sint32 height, sint32 depth, void* pixelData, sint32 sliceIndex, sint32 mipIndex, uint32 compressedImageSize)
 {
-    auto mtlTexture = (LatteTextureMtl*)hostTexture;
+    auto textureMtl = (LatteTextureMtl*)hostTexture;
 
-    size_t bytesPerRow = GetMtlTextureBytesPerRow(mtlTexture->GetFormat(), mtlTexture->IsDepth(), width);
-    size_t bytesPerImage = GetMtlTextureBytesPerImage(mtlTexture->GetFormat(), mtlTexture->IsDepth(), height, bytesPerRow);
-    mtlTexture->GetTexture()->replaceRegion(MTL::Region(0, 0, width, height), mipIndex, sliceIndex, pixelData, bytesPerRow, bytesPerImage);
+    size_t bytesPerRow = GetMtlTextureBytesPerRow(textureMtl->GetFormat(), textureMtl->IsDepth(), width);
+    size_t bytesPerImage = GetMtlTextureBytesPerImage(textureMtl->GetFormat(), textureMtl->IsDepth(), height, bytesPerRow);
+    textureMtl->GetTexture()->replaceRegion(MTL::Region(0, 0, width, height), mipIndex, sliceIndex, pixelData, bytesPerRow, bytesPerImage);
 }
 
 void MetalRenderer::texture_clearColorSlice(LatteTexture* hostTexture, sint32 sliceIndex, sint32 mipIndex, float r, float g, float b, float a)
 {
-    auto mtlTexture = static_cast<LatteTextureMtl*>(hostTexture)->GetTexture();
-
-    ClearColorTextureInternal(mtlTexture, sliceIndex, mipIndex, r, g, b, a);
+    static_cast<LatteTextureMtl*>(hostTexture)->RegisterClear({ .color = {r, g, b, a} }, mipIndex, sliceIndex);
 }
 
 void MetalRenderer::texture_clearDepthSlice(LatteTexture* hostTexture, uint32 sliceIndex, sint32 mipIndex, bool clearDepth, bool clearStencil, float depthValue, uint32 stencilValue)
 {
-    auto mtlTexture = static_cast<LatteTextureMtl*>(hostTexture)->GetTexture();
-
-    MTL::RenderPassDescriptor* renderPassDescriptor = MTL::RenderPassDescriptor::alloc()->init();
-    if (clearDepth)
-    {
-        auto depthAttachment = renderPassDescriptor->depthAttachment();
-        depthAttachment->setTexture(mtlTexture);
-        depthAttachment->setClearDepth(depthValue);
-        depthAttachment->setLoadAction(MTL::LoadActionClear);
-        depthAttachment->setStoreAction(MTL::StoreActionStore);
-        depthAttachment->setSlice(sliceIndex);
-        depthAttachment->setLevel(mipIndex);
-    }
-    if (clearStencil)
-    {
-        auto stencilAttachment = renderPassDescriptor->stencilAttachment();
-        stencilAttachment->setTexture(mtlTexture);
-        stencilAttachment->setClearStencil(stencilValue);
-        stencilAttachment->setLoadAction(MTL::LoadActionClear);
-        stencilAttachment->setStoreAction(MTL::StoreActionStore);
-        stencilAttachment->setSlice(sliceIndex);
-        stencilAttachment->setLevel(mipIndex);
-    }
-
-    MTL::Texture* colorRenderTargets[8] = {nullptr};
-    GetRenderCommandEncoder(renderPassDescriptor, colorRenderTargets, mtlTexture, true);
-    renderPassDescriptor->release();
+    static_cast<LatteTextureMtl*>(hostTexture)->RegisterClear({ .depthStencil = {clearDepth, clearStencil, depthValue, stencilValue} }, mipIndex, sliceIndex);
 }
 
 LatteTexture* MetalRenderer::texture_createTextureEx(Latte::E_DIM dim, MPTR physAddress, MPTR physMipAddress, Latte::E_GX2SURFFMT format, uint32 width, uint32 height, uint32 depth, uint32 pitch, uint32 mipLevels, uint32 swizzle, Latte::E_HWTILEMODE tileMode, bool isDepth)
@@ -373,8 +356,10 @@ void MetalRenderer::texture_copyImageSubData(LatteTexture* src, sint32 srcMip, s
 {
     auto blitCommandEncoder = GetBlitCommandEncoder();
 
-    auto mtlSrc = static_cast<LatteTextureMtl*>(src)->GetTexture();
-    auto mtlDst = static_cast<LatteTextureMtl*>(dst)->GetTexture();
+    auto srcMtl = static_cast<LatteTextureMtl*>(src);
+    auto dstMtl = static_cast<LatteTextureMtl*>(dst);
+    auto mtlSrc = srcMtl->GetTexture();
+    auto mtlDst = dstMtl->GetTexture();
 
     uint32 srcBaseLayer = 0;
     uint32 dstBaseLayer = 0;
@@ -406,6 +391,10 @@ void MetalRenderer::texture_copyImageSubData(LatteTexture* src, sint32 srcMip, s
 		dstBaseLayer = dstSlice;
 		dstLayerCount = srcDepth_;
 	}
+
+	// Flush
+	srcMtl->FlushRegion(srcMip, 1, srcBaseLayer, srcLayerCount);
+	dstMtl->FlushRegion(dstMip, 1, dstBaseLayer, dstLayerCount);
 
 	// If copying whole textures, we can do a more efficient copy
     if (effectiveSrcX == 0 && effectiveSrcY == 0 && effectiveDstX == 0 && effectiveDstY == 0 &&
@@ -446,7 +435,10 @@ void MetalRenderer::texture_copyImageSubData(LatteTexture* src, sint32 srcMip, s
 
 LatteTextureReadbackInfo* MetalRenderer::texture_createReadback(LatteTextureView* textureView)
 {
-    size_t uploadSize = static_cast<LatteTextureMtl*>(textureView->baseTexture)->GetTexture()->allocatedSize();
+    auto textureViewMtl = static_cast<LatteTextureMtl*>(textureView->baseTexture);
+    // TODO: flush whole?
+    textureViewMtl->FlushRegion(0, 1, 0, 1);
+    size_t uploadSize = textureViewMtl->GetTexture()->allocatedSize();
 
     if ((m_readbackBufferWriteOffset + uploadSize) > TEXTURE_READBACK_SIZE)
 	{
@@ -477,6 +469,8 @@ void MetalRenderer::surfaceCopy_copySurfaceWithFormatConversion(LatteTexture* so
 
 	LatteTextureMtl* srcTextureMtl = static_cast<LatteTextureMtl*>(sourceTexture);
 	LatteTextureMtl* dstTextureMtl = static_cast<LatteTextureMtl*>(destinationTexture);
+	srcTextureMtl->FlushRegion(srcMip, 1, srcSlice, 1);
+	dstTextureMtl->FlushRegion(dstMip, 1, dstSlice, 1);
 
 	// check if texture rescale ratios match
 	// todo - if not, we have to use drawcall based copying
@@ -646,14 +640,6 @@ void MetalRenderer::draw_beginSequence()
 
 	if (!rasterizerEnable == false)
 		m_state.m_skipDrawSequence = true;
-}
-
-void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 instanceCount, uint32 count, MPTR indexDataMPTR, Latte::LATTE_VGT_DMA_INDEX_TYPE::E_INDEX_TYPE indexType, bool isFirst)
-{
-    //if (m_state.skipDrawSequence)
-	//{
-	//	return;
-	//}
 
 	// Render pass
 	if (!m_state.m_activeFBO)
@@ -662,7 +648,8 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 	    return;
 	}
 
-	auto renderPassDescriptor = m_state.m_activeFBO->GetRenderPassDescriptor();
+	bool doesClear = false;
+	auto renderPassDescriptor = m_state.m_activeFBO->GetRenderPassDescriptor(doesClear);
 	MTL::Texture* colorRenderTargets[8] = {nullptr};
 	MTL::Texture* depthRenderTarget = nullptr;
 	for (uint32 i = 0; i < 8; i++)
@@ -678,7 +665,27 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
     {
         depthRenderTarget = depthTexture->GetRGBAView();
     }
-	auto renderCommandEncoder = GetRenderCommandEncoder(renderPassDescriptor, colorRenderTargets, depthRenderTarget);
+	GetRenderCommandEncoder(renderPassDescriptor, colorRenderTargets, depthRenderTarget, doesClear);
+	renderPassDescriptor->release();
+}
+
+void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 instanceCount, uint32 count, MPTR indexDataMPTR, Latte::LATTE_VGT_DMA_INDEX_TYPE::E_INDEX_TYPE indexType, bool isFirst)
+{
+    //if (m_state.skipDrawSequence)
+	//{
+	//	return;
+	//}
+
+	auto renderCommandEncoder = static_cast<MTL::RenderCommandEncoder*>(m_commandEncoder);
+
+	// Flush bound textures
+	for (uint32 i = 0; i < MAX_MTL_TEXTURES; i++)
+	{
+	    if (m_state.m_textures[i])
+        {
+            m_state.m_textures[i]->Flush();
+        }
+	}
 
 	// Shaders
 	LatteDecompilerShader* vertexShader = LatteSHRC_GetActiveVertexShader();
@@ -1398,21 +1405,4 @@ void MetalRenderer::RebindRenderState(MTL::RenderCommandEncoder* renderCommandEn
 	    if (vertexBufferRange.offset != INVALID_OFFSET)
             vertexBufferRange.needsRebind = true;
 	}
-}
-
-void MetalRenderer::ClearColorTextureInternal(MTL::Texture* mtlTexture, sint32 sliceIndex, sint32 mipIndex, float r, float g, float b, float a)
-{
-    MTL::RenderPassDescriptor* renderPassDescriptor = MTL::RenderPassDescriptor::alloc()->init();
-    auto colorAttachment = renderPassDescriptor->colorAttachments()->object(0);
-    colorAttachment->setTexture(mtlTexture);
-    colorAttachment->setClearColor(MTL::ClearColor(r, g, b, a));
-    colorAttachment->setLoadAction(MTL::LoadActionClear);
-    colorAttachment->setStoreAction(MTL::StoreActionStore);
-    colorAttachment->setSlice(sliceIndex);
-    colorAttachment->setLevel(mipIndex);
-
-    MTL::Texture* colorRenderTargets[8] = {nullptr};
-    colorRenderTargets[0] = mtlTexture;
-    GetRenderCommandEncoder(renderPassDescriptor, colorRenderTargets, nullptr, true);
-    renderPassDescriptor->release();
 }

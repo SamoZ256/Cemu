@@ -21,6 +21,12 @@ public:
         return GetSwizzledView(RGBA_SWIZZLE);
     }
 
+    void Flush();
+
+    void FlushRegion(uint32 firstMip, uint32 mipCount, uint32 firstSlice, uint32 sliceCount);
+
+	bool FlushRegionAtRenderPassBegin(MTL::RenderPassDescriptor* renderPassDescriptor, uint32 colorAttachmentIndex = 0, bool hasStencil = true);
+
 private:
 	class MetalRenderer* m_mtlr;
 
