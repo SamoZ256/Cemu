@@ -372,7 +372,7 @@ public:
 
     bool AcquireDrawable(bool mainWindow);
 
-    bool CheckIfRenderPassNeedsFlush(LatteDecompilerShader* shader);
+    void CheckIfRenderPassNeedsFlush(LatteDecompilerShader* shader, uint8& renderTargetMask);
     void BindStageResources(MTL::RenderCommandEncoder* renderCommandEncoder, LatteDecompilerShader* shader, bool usesGeometryShader);
 
     void ClearColorTextureInternal(MTL::Texture* mtlTexture, sint32 sliceIndex, sint32 mipIndex, float r, float g, float b, float a);
@@ -435,6 +435,7 @@ private:
 	// Managers and caches
 	class MetalMemoryManager* m_memoryManager;
 	class MetalPipelineCache* m_pipelineCache;
+	class MetalTileFlushPipelineCache* m_tileFlushPipelineCache;
 	class MetalDepthStencilCache* m_depthStencilCache;
 	class MetalSamplerCache* m_samplerCache;
 

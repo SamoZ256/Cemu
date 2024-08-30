@@ -1,9 +1,9 @@
 #pragma once
 
-#include <Metal/Metal.hpp>
+#include "Cafe/HW/Latte/Renderer/Metal/MetalCommon.h"
 
-#include "HW/Latte/ISA/LatteReg.h"
-#include "HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
+#include "Cafe/HW/Latte/ISA/LatteReg.h"
+#include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 
 class MetalPipelineCache

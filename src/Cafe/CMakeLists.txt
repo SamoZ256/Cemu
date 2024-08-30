@@ -561,6 +561,8 @@ if(ENABLE_METAL)
             HW/Latte/Renderer/Metal/MetalMemoryManager.h
             HW/Latte/Renderer/Metal/MetalPipelineCache.cpp
             HW/Latte/Renderer/Metal/MetalPipelineCache.h
+            HW/Latte/Renderer/Metal/MetalTileFlushPipelineCache.cpp
+            HW/Latte/Renderer/Metal/MetalTileFlushPipelineCache.h
             HW/Latte/Renderer/Metal/MetalDepthStencilCache.cpp
             HW/Latte/Renderer/Metal/MetalDepthStencilCache.h
             HW/Latte/Renderer/Metal/MetalSamplerCache.cpp

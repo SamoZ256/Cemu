@@ -12,7 +12,7 @@ struct Uvec2 {
     uint32 y;
 };
 
-enum class MetalDataType
+enum class MetalDataType : uint8
 {
     NONE,
     INT,

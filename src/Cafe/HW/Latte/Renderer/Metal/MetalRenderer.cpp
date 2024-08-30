@@ -5,6 +5,7 @@
 #include "Cafe/HW/Latte/Renderer/Metal/RendererShaderMtl.h"
 #include "Cafe/HW/Latte/Renderer/Metal/CachedFBOMtl.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.h"
+#include "Cafe/HW/Latte/Renderer/Metal/MetalTileFlushPipelineCache.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalDepthStencilCache.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalSamplerCache.h"
 #include "Cafe/HW/Latte/Renderer/Metal/LatteTextureReadbackMtl.h"
@@ -20,7 +21,6 @@
 #include "HW/Latte/Renderer/Metal/MetalCommon.h"
 #include "HW/Latte/Renderer/Metal/MetalLayerHandle.h"
 #include "HW/Latte/Renderer/Renderer.h"
-#include "imgui.h"
 
 #define IMGUI_IMPL_METAL_CPP
 #include "imgui/imgui_extension.h"
@@ -78,6 +78,8 @@ MetalRenderer::MetalRenderer()
 
     m_memoryManager = new MetalMemoryManager(this);
     m_pipelineCache = new MetalPipelineCache(this);
+    if (m_isAppleGPU)
+        m_tileFlushPipelineCache = new MetalTileFlushPipelineCache(this);
     m_depthStencilCache = new MetalDepthStencilCache(this);
     m_samplerCache = new MetalSamplerCache(this);
 
@@ -173,6 +175,8 @@ MetalRenderer::~MetalRenderer()
     m_presentPipelineSRGB->release();
 
     delete m_pipelineCache;
+    if (m_isAppleGPU)
+        delete m_tileFlushPipelineCache;
     delete m_depthStencilCache;
     delete m_samplerCache;
     delete m_memoryManager;
@@ -910,16 +914,45 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
     }
     const auto fetchShader = LatteSHRC_GetActiveFetchShader();
 
-	// Check if we need to end the render pass
-	// Fragment shader is most likely to require a render pass flush, so check for it first
-	bool endRenderPass = CheckIfRenderPassNeedsFlush(pixelShader);
-	if (!endRenderPass)
-	    endRenderPass = CheckIfRenderPassNeedsFlush(vertexShader);
-	if (!endRenderPass && geometryShader)
-	    endRenderPass = CheckIfRenderPassNeedsFlush(geometryShader);
+	// Check if we need to flush the color render targets
+	// We only do this on Apple Silicon GPUs, since all the other GPUs are immediate mode and therefore the data is already in the memory
+	// This, however, means that we are relying on undefined behavior, since the implementation is not required to actually have the data in the memory
+	if (m_isAppleGPU && m_encoderType == MetalEncoderType::Render && !m_state.m_isFirstDrawInRenderPass)
+	{
+	    uint8 renderTargetMask = 0;
+        CheckIfRenderPassNeedsFlush(vertexShader, renderTargetMask);
+    	if (geometryShader)
+    	    CheckIfRenderPassNeedsFlush(geometryShader, renderTargetMask);
+        CheckIfRenderPassNeedsFlush(pixelShader, renderTargetMask);
 
-	if (endRenderPass)
-	    EndEncoding();
+        if (renderTargetMask != 0)
+        {
+            auto pipeline = m_tileFlushPipelineCache->GetRenderPipelineState(m_state.m_lastUsedFBO, renderTargetMask);
+
+            // Flush the render targets
+            auto renderCommandEncoder = static_cast<MTL::RenderCommandEncoder*>(m_commandEncoder);
+
+            renderCommandEncoder->setRenderPipelineState(pipeline);
+            encoderState.m_renderPipelineState = pipeline;
+
+            // Set the render target textures
+            for (uint8 i = 0; i < LATTE_NUM_COLOR_TARGET; i++)
+            {
+                if (renderTargetMask & (1 << i))
+                {
+                    auto colorTarget = static_cast<LatteTextureViewMtl*>(m_state.m_activeFBO->colorBuffer[i].texture);
+                    if (colorTarget)
+                    {
+                        // TODO: set all of them in one call
+                        renderCommandEncoder->setTileTexture(colorTarget->GetRGBAView(), i);
+                    }
+                }
+            }
+
+            // Dispatch the flush
+            renderCommandEncoder->dispatchThreadsPerTile(MTL::Size(renderCommandEncoder->tileWidth(), renderCommandEncoder->tileHeight(), 1));
+        }
+	}
 
     // Primitive type
     const LattePrimitiveMode primitiveMode = static_cast<LattePrimitiveMode>(LatteGPUState.contextRegister[mmVGT_PRIMITIVE_TYPE]);
@@ -1568,7 +1601,7 @@ bool MetalRenderer::AcquireDrawable(bool mainWindow)
     return layer.AcquireDrawable();
 }
 
-bool MetalRenderer::CheckIfRenderPassNeedsFlush(LatteDecompilerShader* shader)
+void MetalRenderer::CheckIfRenderPassNeedsFlush(LatteDecompilerShader* shader, uint8& renderTargetMask)
 {
     sint32 textureCount = shader->resourceMapping.getTextureCount();
 	for (int i = 0; i < textureCount; ++i)
@@ -1599,20 +1632,21 @@ bool MetalRenderer::CheckIfRenderPassNeedsFlush(LatteDecompilerShader* shader)
 		if (!textureView)
             continue;
 
+        // TODO: also check if the binding is valid
+
 		LatteTexture* baseTexture = textureView->baseTexture;
-		if (!m_state.m_isFirstDrawInRenderPass)
+
+	    // If the texture is also used in the current render pass, we need to end the render pass to "flush" the texture
+		for (uint8 i = 0; i < LATTE_NUM_COLOR_TARGET; i++)
 		{
-		    // If the texture is also used in the current render pass, we need to end the render pass to "flush" the texture
-			for (uint8 i = 0; i < LATTE_NUM_COLOR_TARGET; i++)
+		    auto colorTarget = m_state.m_lastUsedFBO->colorBuffer[i].texture;
+			if (colorTarget && colorTarget->baseTexture == baseTexture)
 			{
-			    auto colorTarget = m_state.m_activeFBO->colorBuffer[i].texture;
-				if (colorTarget && colorTarget->baseTexture == baseTexture)
-				    return true;
+			    renderTargetMask |= (1 << i);
 			}
 		}
+		// TODO: check for depth/stencil buffer as well
 	}
-
-	return false;
 }
 
 void MetalRenderer::BindStageResources(MTL::RenderCommandEncoder* renderCommandEncoder, LatteDecompilerShader* shader, bool usesGeometryShader)

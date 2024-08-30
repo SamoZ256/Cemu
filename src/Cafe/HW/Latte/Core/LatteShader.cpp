@@ -542,6 +542,13 @@ void LatteSHRC_UpdatePSBaseHash(uint8* pixelShaderPtr, uint32 pixelShaderSize, b
 	_calculateShaderProgramHash(psProgramCode, pixelShaderSize, &hashCachePS, &psHash1, &psHash2);
 	// get vertex shader
 	uint64 psHash = psHash1 + psHash2 + _activePSImportTable.key + (usesGeometryShader ? hashCacheGS.prevHash1 : 0ULL);
+
+	// Pixel formats
+	if (g_renderer->GetType() == RendererAPI::Metal)
+	{
+	    // TODO: include pixel formats in the hash
+	}
+
 	_shaderBaseHash_ps = psHash;
 }
 
