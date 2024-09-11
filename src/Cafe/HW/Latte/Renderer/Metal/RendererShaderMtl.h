@@ -18,6 +18,8 @@ class RendererShaderMtl : public RendererShader
 	//};
 
 public:
+    static void FinalizeGlslangIfNeeded();
+
 	RendererShaderMtl(class MetalRenderer* mtlRenderer, ShaderType type, uint64 baseHash, uint64 auxHash, bool isGameShader, bool isGfxPackShader, const std::string& mslCode);
 	virtual ~RendererShaderMtl();
 
@@ -48,9 +50,11 @@ public:
 	bool WaitForCompiled() override { return true; }
 
 private:
+    static bool s_glslangInitialized;
+
     class MetalRenderer* m_mtlr;
 
 	MTL::Function* m_function = nullptr;
 
-	void Compile(const std::string& mslCode);
+	std::string TranslateGlslToMsl(const std::string& glslCode);
 };

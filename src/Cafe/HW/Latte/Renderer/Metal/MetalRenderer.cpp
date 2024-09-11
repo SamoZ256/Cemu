@@ -186,6 +186,8 @@ MetalRenderer::~MetalRenderer()
 
     m_commandQueue->release();
     m_device->release();
+
+    RendererShaderMtl::FinalizeGlslangIfNeeded();
 }
 
 void MetalRenderer::InitializeLayer(const Vector2i& size, bool mainWindow)
