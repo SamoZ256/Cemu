@@ -155,6 +155,23 @@ void LatteFetchShader::CalculateFetchShaderVkHash()
 	this->vkPipelineHashFragment = h;
 }
 
+void LatteFetchShader::CalculateFetchShaderMtlObjectShaderHash(uint32* contextRegister)
+{uint64 key = 0;
+	for (sint32 g = 0; g < bufferGroups.size(); g++)
+	{
+	    LatteParsedFetchShaderBufferGroup_t& group = bufferGroups[g];
+		uint32 bufferIndex = group.attributeBufferIndex;
+		uint32 bufferBaseRegisterIndex = mmSQ_VTX_ATTRIBUTE_BLOCK_START + bufferIndex * 7;
+		uint32 bufferStride = (contextRegister[bufferBaseRegisterIndex + 2] >> 11) & 0xFFFF;
+
+	    key += (uint64)bufferIndex;
+		key = std::rotl<uint64>(key, 5);
+        key += (uint64)bufferStride;
+		key = std::rotl<uint64>(key, 5);
+	}
+	mtlShaderHashObject = key;
+}
+
 void _fetchShaderDecompiler_parseInstruction_VTX_SEMANTIC(LatteFetchShader* parsedFetchShader, uint32* contextRegister, const LatteClauseInstruction_VTX* instr)
 {
 	uint32 semanticId = instr->getFieldSEM_SEMANTIC_ID(); // location (attribute index inside shader)
@@ -337,6 +354,7 @@ LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::Cach
 		// these only make sense when vertex shader does not call FS?
 		LatteShader_calculateFSKey(newFetchShader);
 		newFetchShader->CalculateFetchShaderVkHash();
+		newFetchShader->CalculateFetchShaderMtlObjectShaderHash(contextRegister);
 		return newFetchShader;
 	}
 
@@ -396,6 +414,7 @@ LatteFetchShader* LatteShaderRecompiler_createFetchShader(LatteFetchShader::Cach
 	}
 	LatteShader_calculateFSKey(newFetchShader);
 	newFetchShader->CalculateFetchShaderVkHash();
+	newFetchShader->CalculateFetchShaderMtlObjectShaderHash(contextRegister);
 
 	// register in cache
 	// its possible that during multi-threaded shader cache loading, two identical (same hash) fetch shaders get created simultaneously

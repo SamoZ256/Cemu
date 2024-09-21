@@ -14,6 +14,9 @@
 #include "config/ActiveSettings.h"
 #include "Cafe/GameProfile/GameProfile.h"
 #include "util/containers/flat_hash_map.hpp"
+#if BOOST_OS_MACOS
+#include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
+#endif
 #include <cinttypes>
 
 // experimental new decompiler (WIP)
@@ -498,6 +501,31 @@ void LatteSHRC_UpdateVSBaseHash(uint8* vertexShaderPtr, uint32 vertexShaderSize,
 	uint64 vsHash2 = 0;
 	_calculateShaderProgramHash(vsProgramCode, vertexShaderSize, &hashCacheVS, &vsHash1, &vsHash2);
 	uint64 vsHash = vsHash1 + vsHash2 + _activeFetchShader->key + _activePSImportTable.key + (usesGeometryShader ? 0x1111ULL : 0ULL);
+	if (g_renderer->GetType() == RendererAPI::Metal)
+	{
+	    if (usesGeometryShader)
+		{
+	        vsHash += _activeFetchShader->mtlShaderHashObject;
+		}
+		else
+		{
+    		// Rasterization
+    		bool rasterizationEnabled = !LatteGPUState.contextNew.PA_CL_CLIP_CNTL.get_DX_RASTERIZATION_KILL();
+
+    		// HACK
+    		if (!LatteGPUState.contextNew.PA_CL_VTE_CNTL.get_VPORT_X_OFFSET_ENA())
+    			rasterizationEnabled = true;
+
+    		const auto& polygonControlReg = LatteGPUState.contextNew.PA_SU_SC_MODE_CNTL;
+    		uint32 cullFront = polygonControlReg.get_CULL_FRONT();
+    		uint32 cullBack = polygonControlReg.get_CULL_BACK();
+    		if (cullFront && cullBack)
+    		    rasterizationEnabled = false;
+
+    		if (rasterizationEnabled)
+    		    vsHash += 51ULL;
+		}
+	}
 
 	uint32 tmp = LatteGPUState.contextNew.PA_CL_VTE_CNTL.getRawValue() ^ 0x43F;
 	vsHash += tmp;
@@ -543,11 +571,18 @@ void LatteSHRC_UpdatePSBaseHash(uint8* pixelShaderPtr, uint32 pixelShaderSize, b
 	// get vertex shader
 	uint64 psHash = psHash1 + psHash2 + _activePSImportTable.key + (usesGeometryShader ? hashCacheGS.prevHash1 : 0ULL);
 
-	// Pixel formats
+#if BOOST_OS_MACOS
 	if (g_renderer->GetType() == RendererAPI::Metal)
 	{
-	    // TODO: include pixel formats in the hash
+        for (uint8 i = 0; i < LATTE_NUM_COLOR_TARGET; i++)
+        {
+            auto format = LatteMRT::GetColorBufferFormat(i, LatteGPUState.contextNew);
+            uint8 dataType = (uint8)GetMtlPixelFormatInfo(format, false).dataType;
+            psHash += (uint64)dataType;
+            psHash = std::rotl<uint64>(psHash, 7);
+        }
 	}
+#endif
 
 	_shaderBaseHash_ps = psHash;
 }

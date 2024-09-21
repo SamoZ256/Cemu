@@ -99,6 +99,7 @@ struct MetalEncoderState
    	uint32 m_depthSlope = 0;
    	uint32 m_depthClamp = 0;
     bool m_depthClipEnable = true;
+    uint32 m_visibilityResultOffset = INVALID_UINT32;
     struct {
         MTL::Buffer* m_buffer;
         size_t m_offset;
@@ -153,32 +154,6 @@ enum class MetalEncoderType
     Render,
     Compute,
     Blit,
-};
-
-// HACK: Dummy occlusion query object for Metal
-class LatteQueryObjectMtl : public LatteQueryObject
-{
-public:
-	LatteQueryObjectMtl(class MetalRenderer* mtlRenderer) : m_mtlr{mtlRenderer} {}
-
-	bool getResult(uint64& numSamplesPassed) override
-	{
-	    cemuLog_log(LogType::MetalLogging, "LatteQueryObjectMtl::getResult: occlusion queries are not yet supported on Metal");
-        return true;
-	}
-
-	void begin() override
-	{
-	    cemuLog_log(LogType::MetalLogging, "LatteQueryObjectMtl::begin: occlusion queries are not yet supported on Metal");
-	}
-
-	void end() override
-	{
-	    cemuLog_log(LogType::MetalLogging, "LatteQueryObjectMtl::end: occlusion queries are not yet supported on Metal");
-	}
-
-private:
-	class MetalRenderer* m_mtlr;
 };
 
 class MetalRenderer : public Renderer
@@ -296,32 +271,29 @@ public:
 	void indexData_uploadIndexMemory(uint32 bufferIndex, uint32 offset, uint32 size) override;
 
 	// occlusion queries
-	LatteQueryObject* occlusionQuery_create() override {
-	    cemuLog_log(LogType::MetalLogging, "MetalRenderer::occlusionQuery_create: Occlusion queries are not yet supported on Metal");
-
-		return new LatteQueryObjectMtl(this);
-	}
-
-	void occlusionQuery_destroy(LatteQueryObject* queryObj) override {
-	    cemuLog_log(LogType::MetalLogging, "MetalRenderer::occlusionQuery_destroy: occlusion queries are not yet supported on Metal");
-	}
-
-	void occlusionQuery_flush() override {
-	    cemuLog_log(LogType::MetalLogging, "MetalRenderer::occlusionQuery_flush: occlusion queries are not yet supported on Metal");
-	}
-
-	void occlusionQuery_updateState() override {
-	    cemuLog_log(LogType::MetalLogging, "MetalRenderer::occlusionQuery_updateState: occlusion queries are not yet supported on Metal");
-	}
+	LatteQueryObject* occlusionQuery_create() override;
+	void occlusionQuery_destroy(LatteQueryObject* queryObj) override;
+	void occlusionQuery_flush() override;
+	void occlusionQuery_updateState() override;
 
 	// Helpers
 	MetalPerformanceMonitor& GetPerformanceMonitor() { return m_performanceMonitor; }
+
+	bool IsCommandBufferActive() const
+	{
+        return (m_commandBuffers.size() != 0);
+    }
 
 	MTL::CommandBuffer* GetCurrentCommandBuffer()
     {
         cemu_assert_debug(m_commandBuffers.size() != 0);
 
         return m_commandBuffers[m_commandBuffers.size() - 1].m_commandBuffer;
+    }
+
+    void RequestSoonCommit()
+    {
+        m_commitTreshold = m_recordedDrawcalls + 8;
     }
 
     MTL::CommandEncoder* GetCommandEncoder()
@@ -361,8 +333,6 @@ public:
     void SetSamplerState(MTL::RenderCommandEncoder* renderCommandEncoder, MetalShaderType shaderType, MTL::SamplerState* samplerState, uint32 index);
 
 	MTL::CommandBuffer* GetCommandBuffer();
-	bool CommandBufferCompleted(MTL::CommandBuffer* commandBuffer);
-	void WaitForCommandBufferCompletion(MTL::CommandBuffer* commandBuffer);
 	MTL::RenderCommandEncoder* GetTemporaryRenderCommandEncoder(MTL::RenderPassDescriptor* renderPassDescriptor);
 	MTL::RenderCommandEncoder* GetRenderCommandEncoder(bool forceRecreate = false);
     MTL::ComputeCommandEncoder* GetComputeCommandEncoder();
@@ -377,7 +347,7 @@ public:
 
     void ClearColorTextureInternal(MTL::Texture* mtlTexture, sint32 sliceIndex, sint32 mipIndex, float r, float g, float b, float a);
 
-    void CopyBufferToBuffer(MTL::Buffer* src, uint32 srcOffset, MTL::Buffer* dst, uint32 dstOffset, uint32 size);
+    void CopyBufferToBuffer(MTL::Buffer* src, uint32 srcOffset, MTL::Buffer* dst, uint32 dstOffset, uint32 size, MTL::RenderStages after, MTL::RenderStages before);
 
     // Getters
     bool IsAppleGPU() const
@@ -395,11 +365,6 @@ public:
         return m_supportsMetal3;
     }
 
-    const MetalPixelFormatSupport& GetPixelFormatSupport() const
-    {
-        return m_pixelFormatSupport;
-    }
-
     //MTL::StorageMode GetOptimalTextureStorageMode() const
     //{
     //    return (m_isAppleGPU ? MTL::StorageModeShared : MTL::StorageModePrivate);
@@ -410,9 +375,70 @@ public:
         return (m_hasUnifiedMemory ? MTL::ResourceStorageModeShared : MTL::ResourceStorageModeManaged);
     }
 
-    MTL::Buffer* GetTextureReadbackBuffer() const
+    MTL::Texture* GetNullTexture2D() const
     {
+        return m_nullTexture2D;
+    }
+
+    MTL::Buffer* GetTextureReadbackBuffer()
+    {
+        if (!m_readbackBuffer)
+        {
+            m_readbackBuffer = m_device->newBuffer(TEXTURE_READBACK_SIZE, MTL::ResourceStorageModeShared);
+#ifdef CEMU_DEBUG_ASSERT
+            m_readbackBuffer->setLabel(GetLabel("Texture readback buffer", m_readbackBuffer));
+#endif
+        }
+
         return m_readbackBuffer;
+    }
+
+    MTL::Buffer* GetXfbRingBuffer()
+    {
+        if (!m_xfbRingBuffer)
+        {
+            // HACK: using just LatteStreamout_GetRingBufferSize will cause page faults
+            m_xfbRingBuffer = m_device->newBuffer(LatteStreamout_GetRingBufferSize() * 4, MTL::ResourceStorageModePrivate);
+#ifdef CEMU_DEBUG_ASSERT
+            m_xfbRingBuffer->setLabel(GetLabel("Transform feedback buffer", m_xfbRingBuffer));
+#endif
+        }
+
+        return m_xfbRingBuffer;
+    }
+
+    MTL::Buffer* GetOcclusionQueryResultBuffer() const
+    {
+        return m_occlusionQuery.m_resultBuffer;
+    }
+
+    uint64* GetOcclusionQueryResultsPtr()
+    {
+        return m_occlusionQuery.m_resultsPtr;
+    }
+
+    uint32 GetAvailableOcclusionQueryIndex()
+    {
+        if (m_occlusionQuery.m_availableIndices.empty())
+        {
+            cemuLog_log(LogType::Force, "No occlusion query index available");
+            return 0;
+        }
+
+        uint32 queryIndex = m_occlusionQuery.m_availableIndices.back();
+        m_occlusionQuery.m_availableIndices.pop_back();
+
+        return queryIndex;
+    }
+
+    void ReleaseOcclusionQueryIndex(uint32 queryIndex)
+    {
+        m_occlusionQuery.m_availableIndices.push_back(queryIndex);
+    }
+
+    void SetActiveOcclusionQueryIndex(uint32 queryIndex)
+    {
+        m_occlusionQuery.m_activeIndex = queryIndex;
     }
 
 private:
@@ -457,18 +483,28 @@ private:
 	MTL::Texture* m_nullTexture2D;
 
 	// Texture readback
-	MTL::Buffer* m_readbackBuffer;
+	MTL::Buffer* m_readbackBuffer = nullptr;
 	uint32 m_readbackBufferWriteOffset = 0;
 
 	// Transform feedback
-	MTL::Buffer* m_xfbRingBuffer;
+	MTL::Buffer* m_xfbRingBuffer = nullptr;
+
+	// Occlusion queries
+	struct
+	{
+    	MTL::Buffer* m_resultBuffer;
+    	uint64* m_resultsPtr;
+    	std::vector<uint32> m_availableIndices;
+        uint32 m_activeIndex = INVALID_UINT32;
+	} m_occlusionQuery;
 
 	// Active objects
 	std::vector<MetalCommandBuffer> m_commandBuffers;
 	MetalEncoderType m_encoderType = MetalEncoderType::None;
 	MTL::CommandEncoder* m_commandEncoder = nullptr;
 
-    uint32 m_recordedDrawcalls = 0;
+    uint32 m_recordedDrawcalls;
+    uint32 m_commitTreshold;
 
 	// State
 	MetalState m_state;

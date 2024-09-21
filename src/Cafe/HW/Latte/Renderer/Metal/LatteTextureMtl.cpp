@@ -4,6 +4,7 @@
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
 #include "Common/precompiled.h"
 #include "Metal/MTLResource.hpp"
+#include "Metal/MTLTexture.hpp"
 
 LatteTextureMtl::LatteTextureMtl(class MetalRenderer* mtlRenderer, Latte::E_DIM dim, MPTR physAddress, MPTR physMipAddress, Latte::E_GX2SURFFMT format, uint32 width, uint32 height, uint32 depth, uint32 pitch, uint32 mipLevels, uint32 swizzle,
 	Latte::E_HWTILEMODE tileMode, bool isDepth)
@@ -22,6 +23,8 @@ LatteTextureMtl::LatteTextureMtl(class MetalRenderer* mtlRenderer, Latte::E_DIM 
 		effectiveBaseHeight = overwriteInfo.height;
 		effectiveBaseDepth = overwriteInfo.depth;
 	}
+	effectiveBaseWidth = std::max(1, effectiveBaseWidth);
+	effectiveBaseHeight = std::max(1, effectiveBaseHeight);
 	effectiveBaseDepth = std::max(1, effectiveBaseDepth);
 
 	desc->setWidth(effectiveBaseWidth);
@@ -73,12 +76,10 @@ LatteTextureMtl::LatteTextureMtl(class MetalRenderer* mtlRenderer, Latte::E_DIM 
 		desc->setArrayLength(effectiveBaseDepth);
 	}
 
-	auto pixelFormat = GetMtlPixelFormat(format, isDepth, m_mtlr->GetPixelFormatSupport());
+	auto pixelFormat = GetMtlPixelFormat(format, isDepth);
 	desc->setPixelFormat(pixelFormat);
 
-	// HACK: even though the textures are never written to from a shader, we still need to use `ShaderWrite` usage to prevent pink lines over the screen
-	MTL::TextureUsage usage = MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite;
-	// TODO: add more conditions
+	MTL::TextureUsage usage = MTL::TextureUsageShaderRead | MTL::TextureUsagePixelFormatView;
 	if (!Latte::IsCompressedFormat(format))
 	{
 		usage |= MTL::TextureUsageRenderTarget;

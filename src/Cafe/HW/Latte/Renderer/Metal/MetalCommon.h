@@ -3,6 +3,8 @@
 #include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
 
+#include "Cafe/HW/Latte/Core/LatteConst.h"
+
 struct MetalPixelFormatSupport
 {
 	bool m_supportsR8Unorm_sRGB;
@@ -16,7 +18,7 @@ struct MetalPixelFormatSupport
         m_supportsR8Unorm_sRGB = device->supportsFamily(MTL::GPUFamilyApple1);
         m_supportsRG8Unorm_sRGB = device->supportsFamily(MTL::GPUFamilyApple1);
         m_supportsPacked16BitFormats = device->supportsFamily(MTL::GPUFamilyApple1);
-        m_supportsDepth24Unorm_Stencil8 = device->supportsFamily(MTL::GPUFamilyMac2);
+        m_supportsDepth24Unorm_Stencil8 = device->depth24Stencil8PixelFormatSupported();
 	}
 };
 
@@ -39,10 +41,10 @@ inline size_t Align(size_t size, size_t alignment)
     return (size + alignment - 1) & ~(alignment - 1);
 }
 
-inline std::string GetColorAttachmentTypeStr(uint32 index)
-{
-    return "COLOR_ATTACHMENT" + std::to_string(index) + "_TYPE";
-}
+//inline std::string GetColorAttachmentTypeStr(uint32 index)
+//{
+//    return "COLOR_ATTACHMENT" + std::to_string(index) + "_TYPE";
+//}
 
 // Cast from const char* to NS::String*
 inline NS::String* ToNSString(const char* str)
@@ -59,4 +61,17 @@ inline NS::String* ToNSString(const std::string& str)
 inline NS::String* GetLabel(const std::string& label, const void* identifier)
 {
     return ToNSString(label + " (" + std::to_string(reinterpret_cast<uintptr_t>(identifier)) + ")");
+}
+
+constexpr MTL::RenderStages ALL_MTL_RENDER_STAGES = MTL::RenderStageVertex | MTL::RenderStageObject | MTL::RenderStageMesh | MTL::RenderStageFragment;
+
+inline bool IsValidDepthTextureType(Latte::E_DIM dim)
+{
+    return (dim == Latte::E_DIM::DIM_2D || dim == Latte::E_DIM::DIM_2D_MSAA || dim == Latte::E_DIM::DIM_2D_ARRAY || dim == Latte::E_DIM::DIM_2D_ARRAY_MSAA || dim == Latte::E_DIM::DIM_CUBEMAP);
+}
+
+inline bool CommandBufferCompleted(MTL::CommandBuffer* commandBuffer)
+{
+    auto status = commandBuffer->status();
+    return (status == MTL::CommandBufferStatusCompleted || status == MTL::CommandBufferStatusError);
 }

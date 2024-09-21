@@ -1,12 +1,13 @@
 #include "Cafe/HW/Latte/Renderer/Metal/CachedFBOMtl.h"
 #include "Cafe/HW/Latte/Renderer/Metal/LatteTextureViewMtl.h"
-#include "HW/Latte/Renderer/Metal/LatteToMtl.h"
-#include "Metal/MTLRenderPass.hpp"
+#include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
+#include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
 
-void CachedFBOMtl::CreateRenderPass()
+CachedFBOMtl::CachedFBOMtl(class MetalRenderer* metalRenderer, uint64 key) : LatteCachedFBO(key)
 {
 	m_renderPassDescriptor = MTL::RenderPassDescriptor::alloc()->init();
 
+	bool hasAttachment = false;
 	for (int i = 0; i < 8; ++i)
 	{
 		const auto& buffer = colorBuffer[i];
@@ -19,6 +20,8 @@ void CachedFBOMtl::CreateRenderPass()
 		colorAttachment->setTexture(textureView->GetRGBAView());
 		colorAttachment->setLoadAction(MTL::LoadActionLoad);
 		colorAttachment->setStoreAction(MTL::StoreActionStore);
+
+		hasAttachment = true;
 	}
 
 	// setup depth attachment
@@ -38,7 +41,21 @@ void CachedFBOMtl::CreateRenderPass()
             stencilAttachment->setLoadAction(MTL::LoadActionLoad);
             stencilAttachment->setStoreAction(MTL::StoreActionStore);
 		}
+
+		hasAttachment = true;
 	}
+
+	// HACK: setup a dummy color attachment to prevent Metal from discarding draws for stremout draws in Super Smash Bros. for Wii U (works fine on MoltenVK without this hack though)
+	if (!hasAttachment)
+	{
+        auto colorAttachment = m_renderPassDescriptor->colorAttachments()->object(0);
+    	colorAttachment->setTexture(metalRenderer->GetNullTexture2D());
+    	colorAttachment->setLoadAction(MTL::LoadActionDontCare);
+    	colorAttachment->setStoreAction(MTL::StoreActionDontCare);
+	}
+
+	// Visibility buffer
+	m_renderPassDescriptor->setVisibilityResultBuffer(metalRenderer->GetOcclusionQueryResultBuffer());
 }
 
 CachedFBOMtl::~CachedFBOMtl()

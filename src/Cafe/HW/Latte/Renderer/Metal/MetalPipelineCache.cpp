@@ -1,15 +1,16 @@
 #include "Cafe/HW/Latte/Renderer/Metal/MetalCommon.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
-#include "Foundation/NSObject.hpp"
-#include "HW/Latte/Core/LatteShader.h"
-#include "HW/Latte/Renderer/Metal/CachedFBOMtl.h"
-#include "HW/Latte/Renderer/Metal/LatteToMtl.h"
-#include "HW/Latte/Renderer/Metal/RendererShaderMtl.h"
-#include "HW/Latte/Renderer/Metal/LatteTextureViewMtl.h"
+#include "Cafe/HW/Latte/Core/LatteShader.h"
+#include "Cafe/HW/Latte/Renderer/Metal/CachedFBOMtl.h"
+#include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
+#include "Cafe/HW/Latte/Renderer/Metal/RendererShaderMtl.h"
+#include "Cafe/HW/Latte/Renderer/Metal/LatteTextureViewMtl.h"
 
-#include "HW/Latte/Core/FetchShader.h"
-#include "HW/Latte/ISA/RegDefines.h"
+#include "Cafe/HW/Latte/Core/FetchShader.h"
+#include "Cafe/HW/Latte/ISA/RegDefines.h"
+#include "Cemu/Logging/CemuLogging.h"
+#include "HW/Latte/Core/LatteConst.h"
 #include "config/ActiveSettings.h"
 
 static void rectsEmulationGS_outputSingleVertex(std::string& gsSrc, const LatteDecompilerShader* vertexShader, LatteShaderPSInputTable* psInputTable, sint32 vIdx, const LatteContextRegister& latteRegister)
@@ -189,15 +190,40 @@ extern std::atomic_int g_compiled_shaders_total;
 extern std::atomic_int g_compiled_shaders_async;
 
 template<typename T>
-void SetFragmentState(T* desc, class CachedFBOMtl* activeFBO, const LatteContextRegister& lcr)
+void SetFragmentState(T* desc, CachedFBOMtl* lastUsedFBO, CachedFBOMtl* activeFBO, const LatteDecompilerShader* pixelShader, const LatteContextRegister& lcr)
 {
+	// Rasterization
+	bool rasterizationEnabled = !lcr.PA_CL_CLIP_CNTL.get_DX_RASTERIZATION_KILL();
+
+	// HACK
+	// TODO: include this in the hash?
+	if (!lcr.PA_CL_VTE_CNTL.get_VPORT_X_OFFSET_ENA())
+		rasterizationEnabled = true;
+
+	// Culling both front and back faces effectively disables rasterization
+	const auto& polygonControlReg = lcr.PA_SU_SC_MODE_CNTL;
+	uint32 cullFront = polygonControlReg.get_CULL_FRONT();
+	uint32 cullBack = polygonControlReg.get_CULL_BACK();
+	if (cullFront && cullBack)
+	    rasterizationEnabled = false;
+
+	auto pixelShaderMtl = static_cast<RendererShaderMtl*>(pixelShader->shader);
+
+	if (!rasterizationEnabled || !pixelShaderMtl)
+	{
+	    desc->setRasterizationEnabled(false);
+		return;
+	}
+
+    desc->setFragmentFunction(pixelShaderMtl->GetFunction());
+
     // Color attachments
 	const Latte::LATTE_CB_COLOR_CONTROL& colorControlReg = lcr.CB_COLOR_CONTROL;
 	uint32 blendEnableMask = colorControlReg.get_BLEND_MASK();
 	uint32 renderTargetMask = lcr.CB_TARGET_MASK.get_MASK();
-	for (uint8 i = 0; i < 8; i++)
+	for (uint8 i = 0; i < LATTE_NUM_COLOR_TARGET; i++)
 	{
-	    const auto& colorBuffer = activeFBO->colorBuffer[i];
+	    const auto& colorBuffer = lastUsedFBO->colorBuffer[i];
 		auto texture = static_cast<LatteTextureViewMtl*>(colorBuffer.texture);
 		if (!texture)
 		{
@@ -205,6 +231,14 @@ void SetFragmentState(T* desc, class CachedFBOMtl* activeFBO, const LatteContext
 		}
 		auto colorAttachment = desc->colorAttachments()->object(i);
 		colorAttachment->setPixelFormat(texture->GetRGBAView()->pixelFormat());
+
+		// Disable writes if not in the active FBO
+		if (!activeFBO->colorBuffer[i].texture)
+        {
+            colorAttachment->setWriteMask(MTL::ColorWriteMaskNone);
+            continue;
+        }
+
 		colorAttachment->setWriteMask(GetMtlColorWriteMask((renderTargetMask >> (i * 4)) & 0xF));
 
 		// Blending
@@ -239,14 +273,14 @@ void SetFragmentState(T* desc, class CachedFBOMtl* activeFBO, const LatteContext
 	}
 
 	// Depth stencil attachment
-	if (activeFBO->depthBuffer.texture)
+	if (lastUsedFBO->depthBuffer.texture)
 	{
-	    auto texture = static_cast<LatteTextureViewMtl*>(activeFBO->depthBuffer.texture);
-           desc->setDepthAttachmentPixelFormat(texture->GetRGBAView()->pixelFormat());
-           if (activeFBO->depthBuffer.hasStencil)
-           {
-               desc->setStencilAttachmentPixelFormat(texture->GetRGBAView()->pixelFormat());
-           }
+	    auto texture = static_cast<LatteTextureViewMtl*>(lastUsedFBO->depthBuffer.texture);
+        desc->setDepthAttachmentPixelFormat(texture->GetRGBAView()->pixelFormat());
+        if (lastUsedFBO->depthBuffer.hasStencil)
+        {
+            desc->setStencilAttachmentPixelFormat(texture->GetRGBAView()->pixelFormat());
+        }
 	}
 }
 
@@ -277,7 +311,7 @@ MetalPipelineCache::~MetalPipelineCache()
     m_binaryArchive->serializeToURL(m_binaryArchiveURL, &error);
     if (error)
     {
-        debug_printf("failed to serialize binary archive: %s\n", error->localizedDescription()->utf8String());
+        cemuLog_log(LogType::Force, "error serializing binary archive: {}", error->localizedDescription()->utf8String());
         error->release();
     }
     m_binaryArchive->release();
@@ -285,9 +319,9 @@ MetalPipelineCache::~MetalPipelineCache()
     m_binaryArchiveURL->release();
 }
 
-MTL::RenderPipelineState* MetalPipelineCache::GetRenderPipelineState(const LatteFetchShader* fetchShader, const LatteDecompilerShader* vertexShader, const LatteDecompilerShader* pixelShader, CachedFBOMtl* activeFBO, const LatteContextRegister& lcr)
+MTL::RenderPipelineState* MetalPipelineCache::GetRenderPipelineState(const LatteFetchShader* fetchShader, const LatteDecompilerShader* vertexShader, const LatteDecompilerShader* pixelShader, CachedFBOMtl* lastUsedFBO, CachedFBOMtl* activeFBO, const LatteContextRegister& lcr)
 {
-    uint64 stateHash = CalculateRenderPipelineHash(fetchShader, vertexShader, pixelShader, activeFBO, lcr);
+    uint64 stateHash = CalculateRenderPipelineHash(fetchShader, vertexShader, pixelShader, lastUsedFBO, lcr);
     auto& pipeline = m_pipelineCache[stateHash];
     if (pipeline)
         return pipeline;
@@ -355,25 +389,15 @@ MTL::RenderPipelineState* MetalPipelineCache::GetRenderPipelineState(const Latte
 		layout->setStride(bufferStride);
 	}
 
-	auto mtlVertexShader = static_cast<RendererShaderMtl*>(vertexShader->shader);
-	auto mtlPixelShader = static_cast<RendererShaderMtl*>(pixelShader->shader);
-	mtlVertexShader->CompileVertexFunction();
-	// HACK
-	if (!mtlVertexShader->GetFunction())
-	{
-	    debug_printf("no vertex function, skipping draw\n");
-		return nullptr;
-	}
-	mtlPixelShader->CompileFragmentFunction(activeFBO);
+	auto vertexShaderMtl = static_cast<RendererShaderMtl*>(vertexShader->shader);
 
 	// Render pipeline state
 	MTL::RenderPipelineDescriptor* desc = MTL::RenderPipelineDescriptor::alloc()->init();
-	desc->setVertexFunction(mtlVertexShader->GetFunction());
-	desc->setFragmentFunction(mtlPixelShader->GetFunction());
+	desc->setVertexFunction(vertexShaderMtl->GetFunction());
 	// TODO: don't always set the vertex descriptor?
 	desc->setVertexDescriptor(vertexDescriptor);
 
-	SetFragmentState(desc, activeFBO, lcr);
+	SetFragmentState(desc, lastUsedFBO, activeFBO, pixelShader, lcr);
 
 	TryLoadBinaryArchive();
 
@@ -392,9 +416,6 @@ MTL::RenderPipelineState* MetalPipelineCache::GetRenderPipelineState(const Latte
 #endif
 	pipeline = m_mtlr->GetDevice()->newRenderPipelineState(desc, MTL::PipelineOptionFailOnBinaryArchiveMiss, nullptr, &error);
 
-	//static uint32 oldPipelineCount = 0;
-	//static uint32 newPipelineCount = 0;
-
 	// Pipeline wasn't found in the binary archive, we need to compile it
 	if (error)
 	{
@@ -408,9 +429,8 @@ MTL::RenderPipelineState* MetalPipelineCache::GetRenderPipelineState(const Latte
 	    pipeline = m_mtlr->GetDevice()->newRenderPipelineState(desc, &error);
 		if (error)
 		{
-		    debug_printf("error creating render pipeline state: %s\n", error->localizedDescription()->utf8String());
+		    cemuLog_log(LogType::Force, "error creating render pipeline state: {}", error->localizedDescription()->utf8String());
 			error->release();
-			return nullptr;
 		}
 		else
 		{
@@ -421,61 +441,50 @@ MTL::RenderPipelineState* MetalPipelineCache::GetRenderPipelineState(const Latte
                 m_binaryArchive->addRenderPipelineFunctions(desc, &error);
                 if (error)
                 {
-                    debug_printf("error saving render pipeline functions: %s\n", error->localizedDescription()->utf8String());
+                    cemuLog_log(LogType::Force, "error saving render pipeline functions: {}", error->localizedDescription()->utf8String());
                     error->release();
                 }
 			}
 		}
-
-		//newPipelineCount++;
 	}
-	//else
-    //{
-    //    oldPipelineCount++;
-    //}
-    //debug_printf("%u pipelines were found in the binary archive, %u new were created\n", oldPipelineCount, newPipelineCount);
 	desc->release();
 	vertexDescriptor->release();
 
 	return pipeline;
 }
 
-MTL::RenderPipelineState* MetalPipelineCache::GetMeshPipelineState(const LatteFetchShader* fetchShader, const LatteDecompilerShader* vertexShader, const LatteDecompilerShader* geometryShader, const LatteDecompilerShader* pixelShader, CachedFBOMtl* activeFBO, const LatteContextRegister& lcr, Renderer::INDEX_TYPE hostIndexType)
+MTL::RenderPipelineState* MetalPipelineCache::GetMeshPipelineState(const LatteFetchShader* fetchShader, const LatteDecompilerShader* vertexShader, const LatteDecompilerShader* geometryShader, const LatteDecompilerShader* pixelShader, CachedFBOMtl* lastUsedFBO, CachedFBOMtl* activeFBO, const LatteContextRegister& lcr, Renderer::INDEX_TYPE hostIndexType)
 {
-    uint64 stateHash = CalculateRenderPipelineHash(fetchShader, vertexShader, pixelShader, activeFBO, lcr);
+    uint64 stateHash = CalculateRenderPipelineHash(fetchShader, vertexShader, pixelShader, lastUsedFBO, lcr);
 
 	stateHash += lcr.GetRawView()[mmVGT_PRIMITIVE_TYPE];
 	stateHash = std::rotl<uint64>(stateHash, 7);
 
 	stateHash += (uint8)hostIndexType;
-	stateHash = std::rotl<uint64>(stateHash, 7); // TODO: 7?s
+	stateHash = std::rotl<uint64>(stateHash, 7);
 
     auto& pipeline = m_pipelineCache[stateHash];
     if (pipeline)
         return pipeline;
 
-	auto mtlObjectShader = static_cast<RendererShaderMtl*>(vertexShader->shader);
-	RendererShaderMtl* mtlMeshShader;
+	auto objectShaderMtl = static_cast<RendererShaderMtl*>(vertexShader->shader);
+	RendererShaderMtl* meshShaderMtl;
 	if (geometryShader)
 	{
-        mtlMeshShader = static_cast<RendererShaderMtl*>(geometryShader->shader);
+        meshShaderMtl = static_cast<RendererShaderMtl*>(geometryShader->shader);
 	}
     else
     {
         // If there is no geometry shader, it means that we are emulating rects
-        mtlMeshShader = rectsEmulationGS_generate(m_mtlr, vertexShader, lcr);
+        meshShaderMtl = rectsEmulationGS_generate(m_mtlr, vertexShader, lcr);
     }
-	auto mtlPixelShader = static_cast<RendererShaderMtl*>(pixelShader->shader);
-	mtlObjectShader->CompileObjectFunction(lcr, fetchShader, vertexShader, hostIndexType);
-	mtlPixelShader->CompileFragmentFunction(activeFBO);
 
 	// Render pipeline state
 	MTL::MeshRenderPipelineDescriptor* desc = MTL::MeshRenderPipelineDescriptor::alloc()->init();
-	desc->setObjectFunction(mtlObjectShader->GetFunction());
-	desc->setMeshFunction(mtlMeshShader->GetFunction());
-	desc->setFragmentFunction(mtlPixelShader->GetFunction());
+	desc->setObjectFunction(objectShaderMtl->GetFunction());
+	desc->setMeshFunction(meshShaderMtl->GetFunction());
 
-	SetFragmentState(desc, activeFBO, lcr);
+	SetFragmentState(desc, lastUsedFBO, activeFBO, pixelShader, lcr);
 
 	TryLoadBinaryArchive();
 
@@ -487,24 +496,23 @@ MTL::RenderPipelineState* MetalPipelineCache::GetMeshPipelineState(const LatteFe
     desc->setLabel(GetLabel("Mesh pipeline state", desc));
 #endif
 	pipeline = m_mtlr->GetDevice()->newRenderPipelineState(desc, MTL::PipelineOptionNone, nullptr, &error);
+	desc->release();
 	if (error)
 	{
-    	debug_printf("error creating render pipeline state: %s\n", error->localizedDescription()->utf8String());
+    	cemuLog_log(LogType::Force, "error creating mesh render pipeline state: {}", error->localizedDescription()->utf8String());
         error->release();
-        return nullptr;
 	}
-	desc->release();
 
 	return pipeline;
 }
 
-uint64 MetalPipelineCache::CalculateRenderPipelineHash(const LatteFetchShader* fetchShader, const LatteDecompilerShader* vertexShader, const LatteDecompilerShader* pixelShader, class CachedFBOMtl* activeFBO, const LatteContextRegister& lcr)
+uint64 MetalPipelineCache::CalculateRenderPipelineHash(const LatteFetchShader* fetchShader, const LatteDecompilerShader* vertexShader, const LatteDecompilerShader* pixelShader, class CachedFBOMtl* lastUsedFBO, const LatteContextRegister& lcr)
 {
     // Hash
     uint64 stateHash = 0;
     for (int i = 0; i < Latte::GPU_LIMITS::NUM_COLOR_ATTACHMENTS; ++i)
 	{
-		auto textureView = static_cast<LatteTextureViewMtl*>(activeFBO->colorBuffer[i].texture);
+		auto textureView = static_cast<LatteTextureViewMtl*>(lastUsedFBO->colorBuffer[i].texture);
 		if (!textureView)
 		    continue;
 
@@ -512,9 +520,9 @@ uint64 MetalPipelineCache::CalculateRenderPipelineHash(const LatteFetchShader* f
 		stateHash = std::rotl<uint64>(stateHash, 7);
 	}
 
-	if (activeFBO->depthBuffer.texture)
+	if (lastUsedFBO->depthBuffer.texture)
 	{
-	    auto textureView = static_cast<LatteTextureViewMtl*>(activeFBO->depthBuffer.texture);
+	    auto textureView = static_cast<LatteTextureViewMtl*>(lastUsedFBO->depthBuffer.texture);
 		stateHash += textureView->GetRGBAView()->pixelFormat();
 		stateHash = std::rotl<uint64>(stateHash, 7);
 	}
@@ -581,8 +589,28 @@ void MetalPipelineCache::TryLoadBinaryArchive()
     if (m_binaryArchive || s_cacheTitleId == INVALID_TITLE_ID)
         return;
 
+    // GPU name
+    const char* deviceName1 = m_mtlr->GetDevice()->name()->utf8String();
+    std::string deviceName;
+    deviceName.assign(deviceName1);
+
+    // Replace spaces with underscores
+    for (auto& c : deviceName)
+    {
+        if (c == ' ')
+            c = '_';
+    }
+
+    // OS version
+    auto osVersion = NS::ProcessInfo::processInfo()->operatingSystemVersion();
+
+    // Precompiled binaries cannot be shared between different devices or OS versions
     const std::string cacheFilename = fmt::format("{:016x}_mtl_pipelines.bin", s_cacheTitleId);
-	const fs::path cachePath = ActiveSettings::GetCachePath("shaderCache/precompiled/{}", cacheFilename);
+	const fs::path cachePath = ActiveSettings::GetCachePath("shaderCache/precompiled/{}/{}-{}-{}/{}", deviceName, osVersion.majorVersion, osVersion.minorVersion, osVersion.patchVersion, cacheFilename);
+
+	// Create the directory if it doesn't exist
+	std::filesystem::create_directories(cachePath.parent_path());
+
     m_binaryArchiveURL = NS::URL::fileURLWithPath(ToNSString((const char*)cachePath.generic_u8string().c_str()));
 
     MTL::BinaryArchiveDescriptor* desc = MTL::BinaryArchiveDescriptor::alloc()->init();
@@ -599,7 +627,7 @@ void MetalPipelineCache::TryLoadBinaryArchive()
         m_binaryArchive = m_mtlr->GetDevice()->newBinaryArchive(desc, &error);
         if (error)
         {
-            debug_printf("failed to create binary archive: %s\n", error->localizedDescription()->utf8String());
+            cemuLog_log(LogType::Force, "failed to create binary archive: {}", error->localizedDescription()->utf8String());
             error->release();
         }
     }

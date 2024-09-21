@@ -1,7 +1,8 @@
 #pragma once
 
 #include "Common/precompiled.h"
-#include "HW/Latte/Core/LatteConst.h"
+#include "Cafe/HW/Latte/Renderer/Metal/MetalCommon.h"
+
 namespace LatteDecompiler
 {
 	static void _emitUniformVariables(LatteDecompilerShaderContext* decompilerContext)
@@ -19,14 +20,7 @@ namespace LatteDecompiler
 		{
 			// uniform registers or buffers are accessed statically with predictable offsets
 			// this allows us to remap the used entries into a more compact array
-			if (shaderType == LatteConst::ShaderType::Vertex)
-				src->addFmt("int4 remappedVS[{}];" _CRLF, (sint32)shader->list_remappedUniformEntries.size());
-			else if (shaderType == LatteConst::ShaderType::Pixel)
-				src->addFmt("int4 remappedPS[{}];" _CRLF, (sint32)shader->list_remappedUniformEntries.size());
-			else if (shaderType == LatteConst::ShaderType::Geometry)
-				src->addFmt("int4 remappedGS[{}];" _CRLF, (sint32)shader->list_remappedUniformEntries.size());
-			else
-				debugBreakpoint();
+			src->addFmt("int4 remapped[{}];" _CRLF, (sint32)shader->list_remappedUniformEntries.size());
 			uniformOffsets.offset_remapped = uniformCurrentOffset;
 			uniformCurrentOffset += 16 * shader->list_remappedUniformEntries.size();
 		}
@@ -34,12 +28,7 @@ namespace LatteDecompiler
 		{
 			uint32 cfileSize = decompilerContext->analyzer.uniformRegisterAccessTracker.DetermineSize(decompilerContext->shaderBaseHash, 256);
 			// full or partial uniform register file has to be present
-			if (shaderType == LatteConst::ShaderType::Vertex)
-				src->addFmt("int4 uniformRegisterVS[{}];" _CRLF, cfileSize);
-			else if (shaderType == LatteConst::ShaderType::Pixel)
-				src->addFmt("int4 uniformRegisterPS[{}];" _CRLF, cfileSize);
-			else if (shaderType == LatteConst::ShaderType::Geometry)
-				src->addFmt("int4 uniformRegisterGS[{}];" _CRLF, cfileSize);
+			src->addFmt("int4 uniformRegister[{}];" _CRLF, cfileSize);
 			uniformOffsets.offset_uniformRegister = uniformCurrentOffset;
 			uniformOffsets.count_uniformRegister = cfileSize;
 			uniformCurrentOffset += 16 * cfileSize;
@@ -154,7 +143,7 @@ namespace LatteDecompiler
 		}
 	}
 
-	static void _emitAttributes(LatteDecompilerShaderContext* decompilerContext)
+	static void _emitAttributes(LatteDecompilerShaderContext* decompilerContext, bool isRectVertexShader)
 	{
 		auto src = decompilerContext->shaderSource;
 		std::string attributeNames;
@@ -170,7 +159,7 @@ namespace LatteDecompiler
 					cemu_assert_debug(decompilerContext->output->resourceMappingMTL.attributeMapping[i] >= 0);
 
 					src->addFmt("uint4 attrDataSem{}", i);
-					if (decompilerContext->options->usesGeometryShader)
+					if (decompilerContext->options->usesGeometryShader || isRectVertexShader)
 					    attributeNames += "#define ATTRIBUTE_NAME" + std::to_string((sint32)decompilerContext->output->resourceMappingMTL.attributeMapping[i]) + " attrDataSem" + std::to_string(i) + "\n";
 					else
 					    src->addFmt(" [[attribute({})]]", (sint32)decompilerContext->output->resourceMappingMTL.attributeMapping[i]);
@@ -261,13 +250,13 @@ namespace LatteDecompiler
 		src->add("};" _CRLF _CRLF);
 	}
 
-	static void _emitInputsAndOutputs(LatteDecompilerShaderContext* decompilerContext, bool isRectVertexShader)
+	static void _emitInputsAndOutputs(LatteDecompilerShaderContext* decompilerContext, bool isRectVertexShader, bool rasterizationEnabled)
 	{
 		auto src = decompilerContext->shaderSource;
 
 		if (decompilerContext->shaderType == LatteConst::ShaderType::Vertex)
 		{
-		    _emitAttributes(decompilerContext);
+		    _emitAttributes(decompilerContext, isRectVertexShader);
 		}
 		else if (decompilerContext->shaderType == LatteConst::ShaderType::Pixel)
 		{
@@ -280,9 +269,11 @@ namespace LatteDecompiler
             {
                	if ((decompilerContext->shader->pixelColorOutputMask & (1 << i)) != 0)
                	{
-                    src->addFmt("#ifdef {}" _CRLF, GetColorAttachmentTypeStr(i));
-              		src->addFmt("{} passPixelColor{} [[color({})]];" _CRLF, GetColorAttachmentTypeStr(i), i, i);
-                    src->add("#endif" _CRLF);
+                    auto dataType = GetColorBufferDataType(i, *decompilerContext->contextRegistersNew);
+                    if (dataType != MetalDataType::NONE)
+                    {
+              		    src->addFmt("{} passPixelColor{} [[color({})]];" _CRLF, GetDataTypeStr(dataType), i, i);
+                    }
                	}
             }
 
@@ -297,7 +288,7 @@ namespace LatteDecompiler
 
 		if (!decompilerContext->options->usesGeometryShader)
 		{
-    		if (decompilerContext->shaderType == LatteConst::ShaderType::Vertex)
+    		if (decompilerContext->shaderType == LatteConst::ShaderType::Vertex && rasterizationEnabled)
     			_emitVSOutputs(decompilerContext, isRectVertexShader);
 		}
 		else
@@ -348,7 +339,7 @@ namespace LatteDecompiler
 		}
 	}
 
-	static void emitHeader(LatteDecompilerShaderContext* decompilerContext, bool isRectVertexShader)
+	static void emitHeader(LatteDecompilerShaderContext* decompilerContext, bool isRectVertexShader, bool rasterizationEnabled)
 	{
 	    auto src = decompilerContext->shaderSource;
 
@@ -407,7 +398,7 @@ namespace LatteDecompiler
 		// uniform buffers
 		_emitUniformBuffers(decompilerContext);
 		// inputs and outputs
-		_emitInputsAndOutputs(decompilerContext, isRectVertexShader);
+		_emitInputsAndOutputs(decompilerContext, isRectVertexShader, rasterizationEnabled);
 
 		if (dump_shaders_enabled)
 			decompilerContext->shaderSource->add("// end of shader inputs/outputs" _CRLF);
@@ -442,7 +433,8 @@ namespace LatteDecompiler
 
 			src->add(", ");
 
-			if (shaderContext->shader->textureUsesDepthCompare[i])
+			// Only 2D and 2D array textures can be used with comparison samplers
+			if (shaderContext->shader->textureUsesDepthCompare[i] && IsValidDepthTextureType(shaderContext->shader->textureUnitDim[i]))
 			    src->add("depth");
 			else
                 src->add("texture");
@@ -493,6 +485,12 @@ namespace LatteDecompiler
                 src->add(", mesh_grid_properties meshGridProperties");
                 src->add(", uint tig [[threadgroup_position_in_grid]]");
                 src->add(", uint tid [[thread_index_in_threadgroup]]");
+                // TODO: put into the support buffer?
+                src->addFmt(", constant uint& verticesPerInstance [[buffer({})]]", decompilerContext->output->resourceMappingMTL.verticesPerInstanceBinding);
+                // TODO: inly include index buffer if needed
+                src->addFmt(", device uint* indexBuffer [[buffer({})]]", decompilerContext->output->resourceMappingMTL.indexBufferBinding);
+                // TODO: put into the support buffer?
+                src->addFmt(", constant uchar& indexType [[buffer({})]]", decompilerContext->output->resourceMappingMTL.indexTypeBinding);
                 src->add(" VERTEX_BUFFER_DEFINITIONS");
 			}
 			else
