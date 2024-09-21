@@ -921,12 +921,35 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
     }
     const auto fetchShader = LatteSHRC_GetActiveFetchShader();
 
-	// Check if we need to flush the color render targets
-	// We only do this on Apple Silicon GPUs, since all the other GPUs are immediate mode and therefore the data is already in the memory
-	// This, however, means that we are relying on undefined behavior, since the implementation is not required to actually have the data in the memory
-	if (m_isAppleGPU && m_encoderType == MetalEncoderType::Render && !m_state.m_isFirstDrawInRenderPass)
-	{
-	    uint8 renderTargetMask = 0;
+    // Primitive type
+    const LattePrimitiveMode primitiveMode = static_cast<LattePrimitiveMode>(LatteGPUState.contextRegister[mmVGT_PRIMITIVE_TYPE]);
+    auto mtlPrimitiveType = GetMtlPrimitiveType(primitiveMode);
+    bool isPrimitiveRect = (primitiveMode == Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::RECTS);
+
+    bool usesGeometryShader = (geometryShader != nullptr || isPrimitiveRect);
+
+	// Index buffer
+	Renderer::INDEX_TYPE hostIndexType;
+	uint32 hostIndexCount;
+	uint32 indexMin = 0;
+	uint32 indexMax = 0;
+	uint32 indexBufferOffset = 0;
+	uint32 indexBufferIndex = 0;
+	LatteIndices_decode(memory_getPointerFromVirtualOffset(indexDataMPTR), indexType, count, primitiveMode, indexMin, indexMax, hostIndexType, hostIndexCount, indexBufferOffset, indexBufferIndex);
+
+	// synchronize vertex and uniform cache and update buffer bindings
+	// We need to call this before getting the render command encoder, since it can cause buffer copies
+	LatteBufferCache_Sync(indexMin + baseVertex, indexMax + baseVertex, baseInstance, instanceCount);
+
+	// Render pass
+	auto renderCommandEncoder = GetRenderCommandEncoder();
+
+    // Check if we need to flush the color render targets
+    // We only do this on Apple Silicon GPUs, since all the other GPUs are immediate mode and therefore the data is already in the memory
+    // This, however, means that we are relying on undefined behavior, since the implementation is not required to actually have the data in the memory
+    if (m_isAppleGPU && !m_state.m_isFirstDrawInRenderPass)
+    {
+        uint8 renderTargetMask = 0;
         CheckIfRenderPassNeedsFlush(vertexShader, renderTargetMask);
     	if (geometryShader)
     	    CheckIfRenderPassNeedsFlush(geometryShader, renderTargetMask);
@@ -934,7 +957,7 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 
         if (renderTargetMask != 0)
         {
-            auto pipeline = m_tileFlushPipelineCache->GetRenderPipelineState(m_state.m_lastUsedFBO, renderTargetMask);
+            auto pipeline = m_tileFlushPipelineCache->GetRenderPipelineState(m_state.m_activeFBO, renderTargetMask);
 
             // Flush the render targets
             auto renderCommandEncoder = static_cast<MTL::RenderCommandEncoder*>(m_commandEncoder);
@@ -959,30 +982,7 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
             // Dispatch the flush
             renderCommandEncoder->dispatchThreadsPerTile(MTL::Size(renderCommandEncoder->tileWidth(), renderCommandEncoder->tileHeight(), 1));
         }
-	}
-
-    // Primitive type
-    const LattePrimitiveMode primitiveMode = static_cast<LattePrimitiveMode>(LatteGPUState.contextRegister[mmVGT_PRIMITIVE_TYPE]);
-    auto mtlPrimitiveType = GetMtlPrimitiveType(primitiveMode);
-    bool isPrimitiveRect = (primitiveMode == Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::RECTS);
-
-    bool usesGeometryShader = (geometryShader != nullptr || isPrimitiveRect);
-
-	// Index buffer
-	Renderer::INDEX_TYPE hostIndexType;
-	uint32 hostIndexCount;
-	uint32 indexMin = 0;
-	uint32 indexMax = 0;
-	uint32 indexBufferOffset = 0;
-	uint32 indexBufferIndex = 0;
-	LatteIndices_decode(memory_getPointerFromVirtualOffset(indexDataMPTR), indexType, count, primitiveMode, indexMin, indexMax, hostIndexType, hostIndexCount, indexBufferOffset, indexBufferIndex);
-
-	// synchronize vertex and uniform cache and update buffer bindings
-	// We need to call this before getting the render command encoder, since it can cause buffer copies
-	LatteBufferCache_Sync(indexMin + baseVertex, indexMax + baseVertex, baseInstance, instanceCount);
-
-	// Render pass
-	auto renderCommandEncoder = GetRenderCommandEncoder();
+    }
 
 	// Depth stencil state
 

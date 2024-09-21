@@ -117,7 +117,7 @@ MTL::RenderPipelineState* MetalTileFlushPipelineCache::GetRenderPipelineState(co
 	MTL::Library* library = m_mtlr->GetDevice()->newLibrary(ToNSString(tileFunctionSrc), nullptr, &error);
 	if (error)
     {
-        printf("failed to create library (error: %s) -> source:\n%s\n", error->localizedDescription()->utf8String(), tileFunctionSrc.c_str());
+        printf("failed to create tile flush library (error: %s) -> source:\n%s\n", error->localizedDescription()->utf8String(), tileFunctionSrc.c_str());
         return nullptr;
     }
     MTL::Function* function = library->newFunction(ToNSString("kernelMain"));
