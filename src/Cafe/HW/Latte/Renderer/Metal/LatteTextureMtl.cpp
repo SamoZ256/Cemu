@@ -10,9 +10,35 @@ LatteTextureMtl::LatteTextureMtl(class MetalRenderer* mtlRenderer, Latte::E_DIM 
 	Latte::E_HWTILEMODE tileMode, bool isDepth)
 	: LatteTexture(dim, physAddress, physMipAddress, format, width, height, depth, pitch, mipLevels, swizzle, tileMode, isDepth), m_mtlr(mtlRenderer), m_format(format), m_isDepth(isDepth)
 {
+    m_texture = CreateTexture(true);
+}
+
+LatteTextureMtl::~LatteTextureMtl()
+{
+	m_texture->release();
+	if (m_textureMirror)
+        m_textureMirror->release();
+}
+
+LatteTextureView* LatteTextureMtl::CreateView(Latte::E_DIM dim, Latte::E_GX2SURFFMT format, sint32 firstMip, sint32 mipCount, sint32 firstSlice, sint32 sliceCount)
+{
+	cemu_assert_debug(mipCount > 0);
+	cemu_assert_debug(sliceCount > 0);
+	cemu_assert_debug((firstMip + mipCount) <= this->mipLevels);
+	cemu_assert_debug((firstSlice + sliceCount) <= this->depth);
+
+	return new LatteTextureViewMtl(m_mtlr, this, dim, format, firstMip, mipCount, firstSlice, sliceCount);
+}
+
+void LatteTextureMtl::AllocateOnHost()
+{
+	cemuLog_log(LogType::MetalLogging, "not implemented");
+}
+
+MTL::Texture* LatteTextureMtl::CreateTexture(bool canBeRenderTarget)
+{
     MTL::TextureDescriptor* desc = MTL::TextureDescriptor::alloc()->init();
     desc->setStorageMode(MTL::StorageModePrivate);
-    desc->setCpuCacheMode(MTL::CPUCacheModeWriteCombined);
 
 	sint32 effectiveBaseWidth = width;
 	sint32 effectiveBaseHeight = height;
@@ -80,33 +106,14 @@ LatteTextureMtl::LatteTextureMtl(class MetalRenderer* mtlRenderer, Latte::E_DIM 
 	desc->setPixelFormat(pixelFormat);
 
 	MTL::TextureUsage usage = MTL::TextureUsageShaderRead | MTL::TextureUsagePixelFormatView;
-	if (!Latte::IsCompressedFormat(format))
+	if (canBeRenderTarget && !Latte::IsCompressedFormat(format))
 	{
 		usage |= MTL::TextureUsageRenderTarget;
 	}
 	desc->setUsage(usage);
 
-	m_texture = mtlRenderer->GetDevice()->newTexture(desc);
-
+	MTL::Texture* texture = m_mtlr->GetDevice()->newTexture(desc);
 	desc->release();
-}
 
-LatteTextureMtl::~LatteTextureMtl()
-{
-	m_texture->release();
-}
-
-LatteTextureView* LatteTextureMtl::CreateView(Latte::E_DIM dim, Latte::E_GX2SURFFMT format, sint32 firstMip, sint32 mipCount, sint32 firstSlice, sint32 sliceCount)
-{
-	cemu_assert_debug(mipCount > 0);
-	cemu_assert_debug(sliceCount > 0);
-	cemu_assert_debug((firstMip + mipCount) <= this->mipLevels);
-	cemu_assert_debug((firstSlice + sliceCount) <= this->depth);
-
-	return new LatteTextureViewMtl(m_mtlr, this, dim, format, firstMip, mipCount, firstSlice, sliceCount);
-}
-
-void LatteTextureMtl::AllocateOnHost()
-{
-	cemuLog_log(LogType::MetalLogging, "not implemented");
+	return texture;
 }

@@ -33,6 +33,7 @@ struct MetalPixelFormatSupport
 #define GET_HELPER_TEXTURE_BINDING(index) (29 + index)
 #define GET_HELPER_SAMPLER_BINDING(index) (14 + index)
 
+constexpr uint8 INVALID_UINT8 = std::numeric_limits<uint8>::max();
 constexpr uint32 INVALID_UINT32 = std::numeric_limits<uint32>::max();
 constexpr size_t INVALID_OFFSET = std::numeric_limits<size_t>::max();
 

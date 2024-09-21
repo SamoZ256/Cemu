@@ -482,12 +482,20 @@ LatteCachedFBO* MetalRenderer::rendertarget_createCachedFBO(uint64 key)
 void MetalRenderer::rendertarget_deleteCachedFBO(LatteCachedFBO* cfbo)
 {
 	if (cfbo == (LatteCachedFBO*)m_state.m_activeFBO)
-	m_state.m_activeFBO = nullptr;
+	    m_state.m_activeFBO = nullptr;
 }
 
 void MetalRenderer::rendertarget_bindFramebufferObject(LatteCachedFBO* cfbo)
 {
-	m_state.m_activeFBO = (CachedFBOMtl*)cfbo;
+	m_state.m_activeFBO = static_cast<CachedFBOMtl*>(cfbo);
+
+	// Check for textures which are bound to shader and used as a render target
+	for (uint32 i = 0; i < 64; i++)
+	{
+	    auto& texture = m_state.m_textures[i];
+	    if (texture.m_textureView)
+			texture.m_renderTargetMask = GetTextureRenderTargetMask(texture.m_textureView->baseTexture);
+	}
 }
 
 void* MetalRenderer::texture_acquireTextureUploadBuffer(uint32 size)
@@ -602,7 +610,11 @@ LatteTexture* MetalRenderer::texture_createTextureEx(Latte::E_DIM dim, MPTR phys
 
 void MetalRenderer::texture_setLatteTexture(LatteTextureView* textureView, uint32 textureUnit)
 {
-    m_state.m_textures[textureUnit] = static_cast<LatteTextureViewMtl*>(textureView);
+    auto& texture = m_state.m_textures[textureUnit];
+    texture.m_textureView = static_cast<LatteTextureViewMtl*>(textureView);
+
+    // Check if the texture is used as a render target
+    texture.m_renderTargetMask = GetTextureRenderTargetMask(textureView->baseTexture);
 }
 
 void MetalRenderer::texture_copyImageSubData(LatteTexture* src, sint32 srcMip, sint32 effectiveSrcX, sint32 effectiveSrcY, sint32 srcSlice, LatteTexture* dst, sint32 dstMip, sint32 effectiveDstX, sint32 effectiveDstY, sint32 dstSlice, sint32 effectiveCopyWidth, sint32 effectiveCopyHeight, sint32 srcDepth_)
@@ -951,7 +963,7 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
                     if (colorTarget)
                     {
                         // TODO: set all of them in one call
-                        renderCommandEncoder->setTileTexture(colorTarget->GetRGBAView(), i);
+                        renderCommandEncoder->setTileTexture(colorTarget->GetRGBAView(true), i);
                     }
                 }
             }
@@ -1679,24 +1691,13 @@ void MetalRenderer::CheckIfRenderPassNeedsFlush(LatteDecompilerShader* shader, u
 			UNREACHABLE;
 		}
 
-		auto textureView = m_state.m_textures[hostTextureUnit];
-		if (!textureView)
+		auto texture = m_state.m_textures[hostTextureUnit];
+		if (!texture.m_textureView)
             continue;
 
         // TODO: also check if the binding is valid
 
-		LatteTexture* baseTexture = textureView->baseTexture;
-
-	    // If the texture is also used in the current render pass, we need to end the render pass to "flush" the texture
-		for (uint8 i = 0; i < LATTE_NUM_COLOR_TARGET; i++)
-		{
-		    auto colorTarget = m_state.m_lastUsedFBO->colorBuffer[i].texture;
-			if (colorTarget && colorTarget->baseTexture == baseTexture)
-			{
-			    renderTargetMask |= (1 << i);
-			}
-		}
-		// TODO: check for depth/stencil buffer as well
+		renderTargetMask |= texture.m_renderTargetMask;
 	}
 }
 
@@ -1737,7 +1738,8 @@ void MetalRenderer::BindStageResources(MTL::RenderCommandEncoder* renderCommandE
             continue;
 		}
 
-		auto textureView = m_state.m_textures[hostTextureUnit];
+		auto& texture = m_state.m_textures[hostTextureUnit];
+		auto textureView = texture.m_textureView;
 		if (!textureView)
 		{
 		    // TODO: don't bind if already bound
@@ -1778,7 +1780,7 @@ void MetalRenderer::BindStageResources(MTL::RenderCommandEncoder* renderCommandE
 		// get texture register word 0
 		uint32 word4 = LatteGPUState.contextRegister[texUnitRegIndex + 4];
 		auto& boundTexture = m_state.m_encoderState.m_textures[mtlShaderType][binding];
-		MTL::Texture* mtlTexture = textureView->GetSwizzledView(word4);
+		MTL::Texture* mtlTexture = textureView->GetSwizzledView(word4, TextureNeedsMirror(texture.m_renderTargetMask));
 		SetTexture(renderCommandEncoder, mtlShaderType, mtlTexture, binding);
 	}
 
@@ -1970,4 +1972,24 @@ void MetalRenderer::EnsureImGuiBackend()
         ImGui_ImplMetal_Init(m_device);
         //ImGui_ImplMetal_CreateFontsTexture(m_device);
     }
+}
+
+uint8 MetalRenderer::GetTextureRenderTargetMask(class LatteTexture* texture)
+{
+    if (!m_state.m_activeFBO)
+        return 0;
+
+    uint8 mask = 0;
+    for (uint8 i = 0; i < LATTE_NUM_COLOR_TARGET; i++)
+	{
+	    auto colorTarget = m_state.m_activeFBO->colorBuffer[i].texture;
+		if (colorTarget && colorTarget->baseTexture == texture)
+		{
+		    mask |= (1 << i);
+		}
+	}
+
+	// TODO: depth and stencil
+
+	return mask;
 }

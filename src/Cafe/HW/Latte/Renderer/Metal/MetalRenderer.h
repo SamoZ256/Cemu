@@ -133,7 +133,11 @@ struct MetalState
 
     MetalBoundBuffer m_vertexBuffers[MAX_MTL_BUFFERS] = {{}};
     // TODO: find out what is the max number of bound textures on the Wii U
-    class LatteTextureViewMtl* m_textures[64] = {nullptr};
+    struct {
+        class LatteTextureViewMtl* m_textureView;
+        // Set if the texture is used as a render target
+        uint8 m_renderTargetMask;
+    } m_textures[64] = {nullptr, 0};
     size_t m_uniformBufferOffsets[METAL_GENERAL_SHADER_TYPE_TOTAL][MAX_MTL_BUFFERS];
 
     MTL::Viewport m_viewport;
@@ -514,7 +518,13 @@ private:
 	    return (mainWindow ? m_mainLayer : m_padLayer);
 	}
 
-	void SwapBuffer(bool mainWindow);
+	inline bool TextureNeedsMirror(uint8 renderTargetMask) const
+	{
+	    //return (renderTargetMask != 0 && !m_state.m_isFirstDrawInRenderPass);
+		return false;
+	}
 
+	void SwapBuffer(bool mainWindow);
 	void EnsureImGuiBackend();
+	uint8 GetTextureRenderTargetMask(class LatteTexture* texture);
 };

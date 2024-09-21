@@ -9,12 +9,21 @@
 class LatteTextureMtl : public LatteTexture
 {
 public:
-	LatteTextureMtl(class MetalRenderer* mtlRenderer, Latte::E_DIM dim, MPTR physAddress, MPTR physMipAddress, Latte::E_GX2SURFFMT format, uint32 width, uint32 height, uint32 depth, uint32 pitch, uint32 mipLevels,
-		uint32 swizzle, Latte::E_HWTILEMODE tileMode, bool isDepth);
+	LatteTextureMtl(class MetalRenderer* mtlRenderer, Latte::E_DIM dim, MPTR physAddress, MPTR physMipAddress, Latte::E_GX2SURFFMT format, uint32 width, uint32 height, uint32 depth, uint32 pitch, uint32 mipLevels, uint32 swizzle, Latte::E_HWTILEMODE tileMode, bool isDepth);
 	~LatteTextureMtl();
 
-	MTL::Texture* GetTexture() const {
-	    return m_texture;
+	inline MTL::Texture* GetTexture(bool mirror = false) {
+	    if (mirror)
+		{
+			if (!m_textureMirror)
+		        m_textureMirror = CreateTexture(false);
+
+            return m_textureMirror;
+		}
+        else
+        {
+            return m_texture;
+        }
 	}
 
 	Latte::E_GX2SURFFMT GetFormat() const {
@@ -34,7 +43,10 @@ private:
 	class MetalRenderer* m_mtlr;
 
 	MTL::Texture* m_texture;
+	MTL::Texture* m_textureMirror = nullptr;
 
 	Latte::E_GX2SURFFMT m_format;
 	bool m_isDepth;
+
+	MTL::Texture* CreateTexture(bool canBeRenderTarget);
 };

@@ -53,15 +53,11 @@ uint32 LatteTextureMtl_AdjustTextureCompSel(Latte::E_GX2SURFFMT format, uint32 c
 	return compSel;
 }
 
-LatteTextureViewMtl::LatteTextureViewMtl(MetalRenderer* mtlRenderer, LatteTextureMtl* texture, Latte::E_DIM dim, Latte::E_GX2SURFFMT format, sint32 firstMip, sint32 mipCount, sint32 firstSlice, sint32 sliceCount)
-	: LatteTextureView(texture, firstMip, mipCount, firstSlice, sliceCount, dim, format), m_mtlr(mtlRenderer), m_baseTexture(texture)
+void MetalTextureViewCache::Clear()
 {
-    m_rgbaView = CreateSwizzledView(RGBA_SWIZZLE);
-}
+    if (m_rgbaView)
+        m_rgbaView->release();
 
-LatteTextureViewMtl::~LatteTextureViewMtl()
-{
-    m_rgbaView->release();
 	for (sint32 i = 0; i < std::size(m_viewCache); i++)
     {
         if (m_viewCache[i].key != INVALID_SWIZZLE)
@@ -74,7 +70,12 @@ LatteTextureViewMtl::~LatteTextureViewMtl()
     }
 }
 
-MTL::Texture* LatteTextureViewMtl::GetSwizzledView(uint32 gpuSamplerSwizzle)
+void MetalTextureViewCache::CreateRGBAView(class LatteTextureViewMtl* view)
+{
+    m_rgbaView = view->CreateSwizzledView(RGBA_SWIZZLE, m_mirror);
+}
+
+MTL::Texture* MetalTextureViewCache::GetView(class LatteTextureViewMtl* view, uint32 gpuSamplerSwizzle)
 {
     // Mask out
     gpuSamplerSwizzle &= 0x0FFF0000;
@@ -109,7 +110,7 @@ MTL::Texture* LatteTextureViewMtl::GetSwizzledView(uint32 gpuSamplerSwizzle)
         return fallbackEntry;
     }
 
-    MTL::Texture* texture = CreateSwizzledView(gpuSamplerSwizzle);
+    MTL::Texture* texture = view->CreateSwizzledView(gpuSamplerSwizzle, m_mirror);
     if (freeIndex != -1)
         m_viewCache[freeIndex] = {gpuSamplerSwizzle, texture};
     else
@@ -118,7 +119,26 @@ MTL::Texture* LatteTextureViewMtl::GetSwizzledView(uint32 gpuSamplerSwizzle)
     return texture;
 }
 
-MTL::Texture* LatteTextureViewMtl::CreateSwizzledView(uint32 gpuSamplerSwizzle)
+LatteTextureViewMtl::LatteTextureViewMtl(MetalRenderer* mtlRenderer, LatteTextureMtl* texture, Latte::E_DIM dim, Latte::E_GX2SURFFMT format, sint32 firstMip, sint32 mipCount, sint32 firstSlice, sint32 sliceCount)
+	: LatteTextureView(texture, firstMip, mipCount, firstSlice, sliceCount, dim, format), m_mtlr(mtlRenderer), m_baseTexture(texture), m_cache(false), m_cacheMirror(true)
+{
+    m_cache.CreateRGBAView(this);
+}
+
+LatteTextureViewMtl::~LatteTextureViewMtl()
+{
+    m_cache.Clear();
+}
+
+MTL::Texture* LatteTextureViewMtl::GetSwizzledView(uint32 gpuSamplerSwizzle, bool mirror)
+{
+    if (mirror)
+        return m_cache.GetView(this, gpuSamplerSwizzle);
+    else
+        return m_cacheMirror.GetView(this, gpuSamplerSwizzle);
+}
+
+MTL::Texture* LatteTextureViewMtl::CreateSwizzledView(uint32 gpuSamplerSwizzle, bool mirror)
 {
     uint32 compSelR = (gpuSamplerSwizzle >> 16) & 0x7;
 	uint32 compSelG = (gpuSamplerSwizzle >> 19) & 0x7;
@@ -181,7 +201,7 @@ MTL::Texture* LatteTextureViewMtl::CreateSwizzledView(uint32 gpuSamplerSwizzle)
     swizzle.alpha = GetMtlTextureSwizzle(compSelA);
 
     auto pixelFormat = GetMtlPixelFormat(format, m_baseTexture->IsDepth());
-    MTL::Texture* texture = m_baseTexture->GetTexture()->newTextureView(pixelFormat, textureType, NS::Range::Make(baseLevel, levelCount), NS::Range::Make(baseLayer, layerCount), swizzle);
+    MTL::Texture* texture = m_baseTexture->GetTexture(mirror)->newTextureView(pixelFormat, textureType, NS::Range::Make(baseLevel, levelCount), NS::Range::Make(baseLayer, layerCount), swizzle);
 
     return texture;
 }
