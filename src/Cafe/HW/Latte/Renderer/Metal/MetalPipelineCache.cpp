@@ -27,7 +27,7 @@ MetalPipelineCache& MetalPipelineCache::GetInstance()
     return *g_mtlPipelineCache;
 }
 
-MetalPipelineCache::MetalPipelineCache(class MetalRenderer* metalRenderer) : m_mtlr{metalRenderer}
+MetalPipelineCache::MetalPipelineCache(class MetalRenderer* metalRenderer) : m_mtlr{metalRenderer}, m_binaryArchive(metalRenderer)
 {
     g_mtlPipelineCache = this;
 }
@@ -51,7 +51,7 @@ MTL::RenderPipelineState* MetalPipelineCache::GetRenderPipelineState(const Latte
     bool fbosMatch;
     compiler.InitFromState(fetchShader, vertexShader, geometryShader, pixelShader, lastUsedAttachmentsInfo, activeAttachmentsInfo, lcr, fbosMatch);
     bool attemptedCompilation = false;
-    MTL::RenderPipelineState* pipeline = compiler.Compile(false, true, true, attemptedCompilation);
+    MTL::RenderPipelineState* pipeline = compiler.Compile(m_binaryArchive, false, true, true, attemptedCompilation);
 
     // If FBOs don't match, it wouldn't be possible to reconstruct the pipeline from the cache
     if (pipeline && fbosMatch)
@@ -176,6 +176,10 @@ struct
 
 uint32 MetalPipelineCache::BeginLoading(uint64 cacheTitleId)
 {
+    // Notify the binary archive
+    m_binaryArchive.SetTitleId(cacheTitleId);
+    m_binaryArchive.LoadSerializedArchive();
+
 	std::error_code ec;
 	fs::create_directories(ActiveSettings::GetCachePath("shaderCache/transferable"), ec);
 	const auto pathCacheFile = ActiveSettings::GetCachePath("shaderCache/transferable/{:016x}_mtlpipeline.bin", cacheTitleId);
@@ -216,6 +220,7 @@ uint32 MetalPipelineCache::BeginLoading(uint64 cacheTitleId)
 		s_cache->UseCompression(false);
 		g_mtlCacheState.pipelineMaxFileIndex = s_cache->GetMaximumFileIndex();
 	}
+
 	return s_cache->GetFileCount();
 }
 
@@ -253,6 +258,9 @@ bool MetalPipelineCache::UpdateLoading(uint32& pipelinesLoadedTotal, uint32& pip
 
 void MetalPipelineCache::EndLoading()
 {
+    // Notify the binary archive
+    m_binaryArchive.CloseSerializedArchive();
+
 	// shut down compilation threads
 	uint32 threadCount = m_numCompilationThreads;
 	m_numCompilationThreads = 0; // signal thread shutdown
@@ -375,7 +383,7 @@ void MetalPipelineCache::LoadPipelineFromCache(std::span<uint8> fileData)
 		//	return;
 		//}
 		bool attemptedCompilation = false;
-		pipeline = pp.Compile(true, true, false, attemptedCompilation);
+		pipeline = pp.Compile(m_binaryArchive, true, true, false, attemptedCompilation);
 		cemu_assert_debug(attemptedCompilation);
 		// destroy pp early
 	}

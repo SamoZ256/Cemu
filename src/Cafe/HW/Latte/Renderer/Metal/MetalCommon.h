@@ -58,10 +58,19 @@ inline NS::String* ToNSString(const std::string& str)
     return ToNSString(str.c_str());
 }
 
+// Cast from fs::path to NS::URL*
+inline NS::URL* ToNSURL(const fs::path& path)
+{
+    return NS::URL::fileURLWithPath(ToNSString(_pathToUtf8(path)));
+}
+
+// Get a label for a resource
 inline NS::String* GetLabel(const std::string& label, const void* identifier)
 {
     return ToNSString(label + " (" + std::to_string(reinterpret_cast<uintptr_t>(identifier)) + ")");
 }
+
+// TODO: make a helper function to set the label for a resource
 
 constexpr MTL::RenderStages ALL_MTL_RENDER_STAGES = MTL::RenderStageVertex | MTL::RenderStageObject | MTL::RenderStageMesh | MTL::RenderStageFragment;
 

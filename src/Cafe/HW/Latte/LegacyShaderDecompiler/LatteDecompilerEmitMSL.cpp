@@ -12,6 +12,7 @@
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalCommon.h"
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
+
 #include "config/ActiveSettings.h"
 #include "util/helpers/StringBuf.h"
 

@@ -1,10 +1,10 @@
 #pragma once
 
 #include "Cafe/HW/Latte/Renderer/Metal/MetalPipelineCompiler.h"
+#include "Cafe/HW/Latte/Renderer/Metal/MetalBinaryArchive.h"
 #include "util/helpers/ConcurrentQueue.h"
 #include "util/helpers/fspinlock.h"
 
-// TODO: binary archives
 class MetalPipelineCache
 {
 public:
@@ -27,6 +27,8 @@ public:
 
 private:
     class MetalRenderer* m_mtlr;
+
+    MetalBinaryArchive m_binaryArchive;
 
     std::map<uint64, MTL::RenderPipelineState*> m_pipelineCache;
     FSpinlock m_pipelineCacheLock;
