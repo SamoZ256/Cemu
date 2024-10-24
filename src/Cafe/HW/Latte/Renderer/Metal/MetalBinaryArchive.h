@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Cafe/HW/Latte/Renderer/Metal/MetalCommon.h"
+#include "Metal/MTLBinaryArchive.hpp"
 
 class MetalBinaryArchive
 {
@@ -41,8 +42,9 @@ private:
     uint32 m_pipelinesSerialized = 0;
     uint32 m_archiveIndex = 0;
 
-    void SerializeOldArchive();
-    void createSaveArchive();
+    void SerializeArchive(MTL::BinaryArchive* archive, const fs::path& path);
+    void SerializeOldSaveArchive();
+    void CreateSaveArchive();
     void LoadSaveArchive();
 
     fs::path GetTmpArchivePath(uint32 index)

@@ -30,7 +30,7 @@ MetalBinaryArchive::MetalBinaryArchive(class MetalRenderer* metalRenderer) : m_m
 
 MetalBinaryArchive::~MetalBinaryArchive()
 {
-    SerializeOldArchive();
+    SerializeOldSaveArchive();
 
     // TODO: combine new archives into a single one
 }
@@ -49,7 +49,7 @@ void MetalBinaryArchive::LoadSerializedArchive()
 
     if (!std::filesystem::exists(m_finalArchivePath))
     {
-        // TODO: create a save archive
+        CreateSaveArchive();
         return;
     }
 
@@ -80,18 +80,24 @@ void MetalBinaryArchive::CloseSerializedArchive()
     if (m_loadArchiveArray)
         m_loadArchiveArray->release();
 
+    if (m_saveArchive)
+    {
+        SerializeArchive(m_saveArchive, m_finalArchivePath);
+        m_saveArchive = nullptr;
+    }
+
     m_isLoading = false;
 }
 
 void MetalBinaryArchive::LoadPipeline(MTL::RenderPipelineDescriptor* renderPipelineDescriptor) {
-    if (m_isLoading)
+    if (m_loadArchiveArray)
         renderPipelineDescriptor->setBinaryArchives(m_loadArchiveArray);
 }
 
 // TODO: should be available since macOS 15.0
 /*
 void MetalBinaryArchive::LoadPipeline(MTL::MeshRenderPipelineDescriptor* renderPipelineDescriptor) {
-    if (m_isLoading)
+    if (m_loadArchiveArray)
         renderPipelineDescriptor->setBinaryArchives(m_loadArchiveArray);
 }
 */
@@ -131,35 +137,33 @@ void MetalBinaryArchive::SavePipeline(MTL::MeshRenderPipelineDescriptor* renderP
 }
 */
 
-void MetalBinaryArchive::SerializeOldArchive()
+void MetalBinaryArchive::SerializeArchive(MTL::BinaryArchive* archive, const fs::path& path)
 {
-    if (!m_saveArchive)
-        return;
-
     NS::Error* error = nullptr;
-    NS::URL* url = ToNSURL(GetTmpArchivePath(m_archiveIndex));
-    m_saveArchive->serializeToURL(url, &error);
+    NS::URL* url = ToNSURL(path);
+    archive->serializeToURL(url, &error);
     url->release();
     if (error)
     {
         cemuLog_log(LogType::Force, "failed to serialize binary archive: {}", error->localizedDescription()->utf8String());
         error->release();
     }
-    m_saveArchive->release();
+    archive->release();
+}
+
+void MetalBinaryArchive::SerializeOldSaveArchive()
+{
+    if (!m_saveArchive)
+        return;
+
+    SerializeArchive(m_saveArchive, GetTmpArchivePath(m_archiveIndex));
 
     m_archiveIndex++;
     m_pipelinesSerialized = 0;
 }
 
-void MetalBinaryArchive::LoadSaveArchive()
+void MetalBinaryArchive::CreateSaveArchive()
 {
-    if (m_isLoading || (m_saveArchive && m_pipelinesSerialized < SERIALIZE_TRESHOLD))
-        return;
-
-    // First, save the old archive to disk
-    SerializeOldArchive();
-
-    // Create a new archive
     MTL::BinaryArchiveDescriptor* desc = MTL::BinaryArchiveDescriptor::alloc()->init();
 
     NS::Error* error = nullptr;
@@ -170,4 +174,16 @@ void MetalBinaryArchive::LoadSaveArchive()
         error->release();
     }
     desc->release();
+}
+
+void MetalBinaryArchive::LoadSaveArchive()
+{
+    if (m_isLoading || (m_saveArchive && m_pipelinesSerialized < SERIALIZE_TRESHOLD))
+        return;
+
+    // First, save the old archive to disk
+    SerializeOldSaveArchive();
+
+    // Create a new archive
+    CreateSaveArchive();
 }
