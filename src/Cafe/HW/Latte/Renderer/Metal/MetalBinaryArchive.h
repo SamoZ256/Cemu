@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Cafe/HW/Latte/Renderer/Metal/MetalCommon.h"
-#include "Metal/MTLBinaryArchive.hpp"
+#include "util/helpers/fspinlock.h"
 
 class MetalBinaryArchive
 {
@@ -41,6 +41,8 @@ private:
 
     uint32 m_pipelinesSerialized = 0;
     uint32 m_archiveIndex = 0;
+
+    FSpinlock m_lock;
 
     void SerializeArchive(MTL::BinaryArchive* archive, const fs::path& path);
     void SerializeOldSaveArchive();

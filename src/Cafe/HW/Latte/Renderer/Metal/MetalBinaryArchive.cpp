@@ -80,11 +80,13 @@ void MetalBinaryArchive::CloseSerializedArchive()
     if (m_loadArchiveArray)
         m_loadArchiveArray->release();
 
+    m_lock.lock();
     if (m_saveArchive)
     {
         SerializeArchive(m_saveArchive, m_finalArchivePath);
         m_saveArchive = nullptr;
     }
+    m_lock.unlock();
 
     m_isLoading = false;
 }
@@ -103,6 +105,8 @@ void MetalBinaryArchive::LoadPipeline(MTL::MeshRenderPipelineDescriptor* renderP
 */
 
 void MetalBinaryArchive::SavePipeline(MTL::RenderPipelineDescriptor* renderPipelineDescriptor) {
+    m_lock.lock();
+
     LoadSaveArchive();
 
     if (m_saveArchive)
@@ -116,6 +120,8 @@ void MetalBinaryArchive::SavePipeline(MTL::RenderPipelineDescriptor* renderPipel
         }
         m_pipelinesSerialized++;
     }
+
+    m_lock.unlock();
 }
 
 // TODO: should be available since macOS 15.0
