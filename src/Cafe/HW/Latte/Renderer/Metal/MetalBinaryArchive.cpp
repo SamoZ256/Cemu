@@ -76,9 +76,15 @@ void MetalBinaryArchive::LoadSerializedArchive()
 void MetalBinaryArchive::CloseSerializedArchive()
 {
     if (m_loadArchive)
+    {
         m_loadArchive->release();
+        m_loadArchive = nullptr;
+    }
     if (m_loadArchiveArray)
+    {
         m_loadArchiveArray->release();
+        m_loadArchiveArray = nullptr;
+    }
 
     m_lock.lock();
     if (m_saveArchive)
