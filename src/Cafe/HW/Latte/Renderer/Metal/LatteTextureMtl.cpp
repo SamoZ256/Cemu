@@ -31,6 +31,20 @@ void LatteTextureMtl::AllocateOnHost()
 	cemuLog_log(LogType::MetalLogging, "not implemented");
 }
 
+bool LatteTextureMtl::RequirePixelFormatViewUsage()
+{
+    if (m_hasPixelFormatViewUsage)
+        return false;
+
+    // Create a new texture with pixel format usage flag
+    m_texture->release();
+    m_texture = CreateTexture(true);
+
+    m_hasPixelFormatViewUsage = true;
+
+    return true;
+}
+
 MTL::Texture* LatteTextureMtl::CreateTexture(bool needsPixelFormatViewUsage)
 {
     MTL::TextureDescriptor* desc = MTL::TextureDescriptor::alloc()->init();

@@ -61,17 +61,19 @@ LatteTextureViewMtl::LatteTextureViewMtl(MetalRenderer* mtlRenderer, LatteTextur
 
 LatteTextureViewMtl::~LatteTextureViewMtl()
 {
-    m_rgbaView->release();
-	for (sint32 i = 0; i < std::size(m_viewCache); i++)
+    Release();
+}
+
+bool LatteTextureViewMtl::RequirePixelFormatViewUsage()
+{
+    bool wasRecreated = m_baseTexture->RequirePixelFormatViewUsage();
+    if (wasRecreated)
     {
-        if (m_viewCache[i].key != INVALID_SWIZZLE)
-            m_viewCache[i].texture->release();
+        Release();
+        m_rgbaView = CreateSwizzledView(RGBA_SWIZZLE);
     }
 
-    for (auto& [key, texture] : m_fallbackViewCache)
-    {
-        texture->release();
-    }
+    return wasRecreated;
 }
 
 MTL::Texture* LatteTextureViewMtl::GetSwizzledView(uint32 gpuSamplerSwizzle)
@@ -184,4 +186,19 @@ MTL::Texture* LatteTextureViewMtl::CreateSwizzledView(uint32 gpuSamplerSwizzle)
     MTL::Texture* texture = m_baseTexture->GetTexture()->newTextureView(pixelFormat, textureType, NS::Range::Make(baseLevel, levelCount), NS::Range::Make(baseLayer, layerCount), swizzle);
 
     return texture;
+}
+
+void LatteTextureViewMtl::Release()
+{
+    m_rgbaView->release();
+	for (sint32 i = 0; i < std::size(m_viewCache); i++)
+    {
+        if (m_viewCache[i].key != INVALID_SWIZZLE)
+            m_viewCache[i].texture->release();
+    }
+
+    for (auto& [key, texture] : m_fallbackViewCache)
+    {
+        texture->release();
+    }
 }

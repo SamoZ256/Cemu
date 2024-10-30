@@ -13,6 +13,11 @@ public:
 		uint32 swizzle, Latte::E_HWTILEMODE tileMode, bool isDepth);
 	~LatteTextureMtl();
 
+	void AllocateOnHost() override;
+
+	bool RequirePixelFormatViewUsage();
+
+	// Getters
 	MTL::Texture* GetTexture() const {
 	    return m_texture;
 	}
@@ -25,8 +30,6 @@ public:
         return m_isDepth;
     }
 
-	void AllocateOnHost() override;
-
 protected:
 	LatteTextureView* CreateView(Latte::E_DIM dim, Latte::E_GX2SURFFMT format, sint32 firstMip, sint32 mipCount, sint32 firstSlice, sint32 sliceCount) override;
 
@@ -34,6 +37,7 @@ private:
 	class MetalRenderer* m_mtlr;
 
 	MTL::Texture* m_texture;
+	bool m_hasPixelFormatViewUsage = false;
 
 	Latte::E_GX2SURFFMT m_format;
 	bool m_isDepth;
