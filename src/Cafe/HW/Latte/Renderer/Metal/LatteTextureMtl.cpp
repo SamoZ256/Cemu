@@ -9,7 +9,7 @@ LatteTextureMtl::LatteTextureMtl(class MetalRenderer* metalRenderer, Latte::E_DI
 	: LatteTexture(dim, physAddress, physMipAddress, format, width, height, depth, pitch, mipLevels, swizzle, tileMode, isDepth), m_mtlr{metalRenderer}, m_format{format}, m_isDepth{isDepth}
 {
     m_pixelFormat = GetMtlPixelFormat(format, isDepth);
-    m_texture = CreateTexture(false);
+    m_texture = CreateTexture();
 }
 
 LatteTextureMtl::~LatteTextureMtl()
@@ -37,16 +37,16 @@ bool LatteTextureMtl::RequirePixelFormatViewUsage()
     if (m_hasPixelFormatViewUsage)
         return false;
 
+    m_hasPixelFormatViewUsage = true;
+
     // Create a new texture with pixel format usage flag
     m_texture->release();
-    m_texture = CreateTexture(true);
-
-    m_hasPixelFormatViewUsage = true;
+    m_texture = CreateTexture();
 
     return true;
 }
 
-MTL::Texture* LatteTextureMtl::CreateTexture(bool needsPixelFormatViewUsage)
+MTL::Texture* LatteTextureMtl::CreateTexture()
 {
     MTL::TextureDescriptor* desc = MTL::TextureDescriptor::alloc()->init();
     desc->setStorageMode(MTL::StorageModePrivate);
@@ -107,7 +107,7 @@ MTL::Texture* LatteTextureMtl::CreateTexture(bool needsPixelFormatViewUsage)
 	desc->setPixelFormat(m_pixelFormat);
 
 	MTL::TextureUsage usage = MTL::TextureUsageShaderRead;
-	if (needsPixelFormatViewUsage)
+	if (m_hasPixelFormatViewUsage)
 	    usage |= MTL::TextureUsagePixelFormatView;
 	if (!Latte::IsCompressedFormat(format))
 		usage |= MTL::TextureUsageRenderTarget;

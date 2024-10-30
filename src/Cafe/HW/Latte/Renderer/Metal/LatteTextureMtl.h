@@ -51,5 +51,5 @@ private:
 	Latte::E_GX2SURFFMT m_format;
 	bool m_isDepth;
 
-	MTL::Texture* CreateTexture(bool needsPixelFormatViewUsage);
+	MTL::Texture* CreateTexture();
 };
