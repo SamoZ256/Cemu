@@ -127,6 +127,13 @@ GameProfileWindow::GameProfileWindow(wxWindow* parent, uint64_t title_id)
 		m_shader_mul_accuracy->SetToolTip(_("EXPERT OPTION\nControls the accuracy of floating point multiplication in shaders.\n\nRecommended: true"));
 		first_row->Add(m_shader_mul_accuracy, 0, wxALL, 5);
 
+		first_row->Add(new wxStaticText(panel, wxID_ANY, _("Lossless texture compression")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+
+		wxString tex_values[] = { _("false"), _("true")};
+		m_texture_compression = new wxChoice(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, (int)std::size(tex_values), tex_values);
+		m_texture_compression->SetToolTip(_("EXPERT OPTION\nEnables lossless compression for all textures.\n\nMetal only\n\nRecommended: false"));
+		first_row->Add(m_texture_compression, 0, wxALL, 5);
+
 		/*first_row->Add(new wxStaticText(panel, wxID_ANY, _("GPU buffer cache accuracy")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
 		wxString accuarcy_values[] = { _("high"), _("medium"), _("low") };
 		m_cache_accuracy = new wxChoice(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, (int)std::size(accuarcy_values), accuarcy_values);
@@ -271,8 +278,10 @@ void GameProfileWindow::ApplyProfile()
 	if (!m_game_profile.m_graphics_api.has_value())
 		m_graphic_api->SetSelection(0); // selecting ""
 	else
-		m_graphic_api->SetSelection(1 + m_game_profile.m_graphics_api.value()); // "", OpenGL, Vulkan
+		m_graphic_api->SetSelection(1 + m_game_profile.m_graphics_api.value()); // "", OpenGL, Vulkan, Metal
 	m_shader_mul_accuracy->SetSelection((int)m_game_profile.m_accurateShaderMul);
+	m_texture_compression->SetSelection((int)m_game_profile.m_textureCompression);
+	m_texture_compression->SetSelection((int)m_game_profile.m_textureCompression);
 
 	//// audio
 	//m_disable_audio->Set3StateValue(GetCheckboxState(m_game_profile.disableAudio));
@@ -334,6 +343,8 @@ void GameProfileWindow::SaveProfile()
 	m_game_profile.m_accurateShaderMul = (AccurateShaderMulOption)m_shader_mul_accuracy->GetSelection();
 	if (m_game_profile.m_accurateShaderMul != AccurateShaderMulOption::False && m_game_profile.m_accurateShaderMul != AccurateShaderMulOption::True)
 		m_game_profile.m_accurateShaderMul = AccurateShaderMulOption::True; // force a legal value
+
+	m_game_profile.m_textureCompression = (bool)m_texture_compression->GetSelection();
 
 	if (m_graphic_api->GetSelection() == 0)
 		m_game_profile.m_graphics_api = {};

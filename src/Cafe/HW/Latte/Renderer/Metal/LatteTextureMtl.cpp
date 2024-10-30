@@ -3,6 +3,7 @@
 #include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
 #include "Common/precompiled.h"
+#include "GameProfile/GameProfile.h"
 #include "Metal/MTLResource.hpp"
 #include "Metal/MTLTexture.hpp"
 
@@ -60,26 +61,18 @@ LatteTextureMtl::LatteTextureMtl(class MetalRenderer* mtlRenderer, Latte::E_DIM 
     desc->setTextureType(textureType);
 
 	if (textureType == MTL::TextureType3D)
-	{
 		desc->setDepth(effectiveBaseDepth);
-	}
-	else if (textureType == MTL::TextureTypeCube)
-	{
-	    // Do nothing
-	}
 	else if (textureType == MTL::TextureTypeCubeArray)
-	{
 		desc->setArrayLength(effectiveBaseDepth / 6);
-	}
 	else
-	{
 		desc->setArrayLength(effectiveBaseDepth);
-	}
 
 	auto pixelFormat = GetMtlPixelFormat(format, isDepth);
 	desc->setPixelFormat(pixelFormat);
 
-	MTL::TextureUsage usage = MTL::TextureUsageShaderRead | MTL::TextureUsagePixelFormatView;
+	MTL::TextureUsage usage = MTL::TextureUsageShaderRead;
+	if (!g_current_game_profile->GetTextureCompression())
+	    usage |= MTL::TextureUsagePixelFormatView;
 	if (!Latte::IsCompressedFormat(format))
 		usage |= MTL::TextureUsageRenderTarget;
 	desc->setUsage(usage);

@@ -40,6 +40,7 @@ private:
 	wxChoice* m_graphic_api;
 
 	wxChoice* m_shader_mul_accuracy;
+	wxChoice* m_texture_compression;
 	//wxChoice* m_cache_accuracy;
 
 	// audio
