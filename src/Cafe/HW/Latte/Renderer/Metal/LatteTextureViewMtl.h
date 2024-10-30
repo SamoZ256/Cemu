@@ -23,6 +23,11 @@ public:
         return GetSwizzledView(RGBA_SWIZZLE);
     }
 
+    // Getters
+	bool HasPixelFormatViewUsage() const {
+        return m_hasPixelFormatViewUsage;
+    }
+
 private:
 	class MetalRenderer* m_mtlr;
 

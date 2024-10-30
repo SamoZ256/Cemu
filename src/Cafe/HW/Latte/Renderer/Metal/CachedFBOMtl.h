@@ -12,11 +12,10 @@ public:
 
 	~CachedFBOMtl();
 
-	MTL::RenderPassDescriptor* GetRenderPassDescriptor()
-	{
-	    return m_renderPassDescriptor;
-	}
+	MTL::RenderPassDescriptor* GetRenderPassDescriptor();
 
 private:
     MTL::RenderPassDescriptor* m_renderPassDescriptor = nullptr;
+
+    bool m_colorTextureViewsUsages[8] = {false};
 };

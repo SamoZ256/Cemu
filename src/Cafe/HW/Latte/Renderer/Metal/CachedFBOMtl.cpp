@@ -2,6 +2,7 @@
 #include "Cafe/HW/Latte/Renderer/Metal/LatteTextureViewMtl.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
+#include "HW/Latte/Core/LatteConst.h"
 
 CachedFBOMtl::CachedFBOMtl(class MetalRenderer* metalRenderer, uint64 key) : LatteCachedFBO(key)
 {
@@ -10,12 +11,10 @@ CachedFBOMtl::CachedFBOMtl(class MetalRenderer* metalRenderer, uint64 key) : Lat
 	bool hasAttachment = false;
 	for (int i = 0; i < 8; ++i)
 	{
-		const auto& buffer = colorBuffer[i];
-		auto textureView = (LatteTextureViewMtl*)buffer.texture;
+		auto textureView = static_cast<LatteTextureViewMtl*>(colorBuffer[i].texture);
 		if (!textureView)
-		{
 			continue;
-		}
+
 		auto colorAttachment = m_renderPassDescriptor->colorAttachments()->object(i);
 		colorAttachment->setTexture(textureView->GetRGBAView());
 		colorAttachment->setLoadAction(MTL::LoadActionLoad);
@@ -61,4 +60,23 @@ CachedFBOMtl::CachedFBOMtl(class MetalRenderer* metalRenderer, uint64 key) : Lat
 CachedFBOMtl::~CachedFBOMtl()
 {
 	m_renderPassDescriptor->release();
+}
+
+MTL::RenderPassDescriptor* CachedFBOMtl::GetRenderPassDescriptor()
+{
+    // Check if any of the color texture views has changed
+    for (uint8 i = 0; i < LATTE_NUM_COLOR_TARGET; i++)
+    {
+        auto textureView = static_cast<LatteTextureViewMtl*>(colorBuffer[i].texture);
+        if (!textureView)
+            continue;
+
+        if (!m_colorTextureViewsUsages[i] && textureView->HasPixelFormatViewUsage())
+        {
+            m_renderPassDescriptor->colorAttachments()->object(i)->setTexture(textureView->GetRGBAView());
+            m_colorTextureViewsUsages[i] = true;
+        }
+    }
+
+    return m_renderPassDescriptor;
 }
