@@ -43,6 +43,8 @@ bool LatteTextureMtl::RequirePixelFormatViewUsage()
     m_texture->release();
     m_texture = CreateTexture();
 
+    // TODO: copy the contents from old texture to new texture
+
     return true;
 }
 

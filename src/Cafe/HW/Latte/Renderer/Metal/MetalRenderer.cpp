@@ -640,14 +640,23 @@ void MetalRenderer::texture_copyImageSubData(LatteTexture* src, sint32 srcMip, s
     auto srcMtl = static_cast<LatteTextureMtl*>(src);
     auto dstMtl = static_cast<LatteTextureMtl*>(dst);
 
-    if (!PixelFormatsCompatible(srcMtl->GetPixelFormat(), dstMtl->GetPixelFormat()))
+    bool pixelFormatsCompatible = PixelFormatsCompatible(srcMtl->GetPixelFormat(), dstMtl->GetPixelFormat());
+    if (!pixelFormatsCompatible)
     {
-        srcMtl->RequirePixelFormatViewUsage();
         dstMtl->RequirePixelFormatViewUsage();
+
+        if (srcMtl->IsDepth() || dstMtl->IsDepth() || srcMtl->IsCompressedFormat() || dstMtl->IsCompressedFormat())
+        {
+            srcMtl->RequirePixelFormatViewUsage();
+            pixelFormatsCompatible = true;
+        }
     }
 
     MTL::Texture* mtlSrc = srcMtl->GetTexture();
     MTL::Texture* mtlDst = dstMtl->GetTexture();
+
+    if (!pixelFormatsCompatible && mtlDst->pixelFormat() != mtlSrc->pixelFormat())
+        mtlDst = mtlDst->newTextureView(mtlSrc->pixelFormat());
 
     uint32 srcBaseLayer = 0;
     uint32 dstBaseLayer = 0;
