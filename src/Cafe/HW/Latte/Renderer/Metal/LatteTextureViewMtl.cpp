@@ -202,4 +202,5 @@ void LatteTextureViewMtl::Release()
     {
         texture->release();
     }
+    m_fallbackViewCache.clear();
 }
