@@ -8,6 +8,7 @@ LatteTextureMtl::LatteTextureMtl(class MetalRenderer* metalRenderer, Latte::E_DI
 	Latte::E_HWTILEMODE tileMode, bool isDepth)
 	: LatteTexture(dim, physAddress, physMipAddress, format, width, height, depth, pitch, mipLevels, swizzle, tileMode, isDepth), m_mtlr{metalRenderer}, m_format{format}, m_isDepth{isDepth}
 {
+    m_pixelFormat = GetMtlPixelFormat(format, isDepth);
     m_texture = CreateTexture(false);
 }
 
@@ -103,8 +104,7 @@ MTL::Texture* LatteTextureMtl::CreateTexture(bool needsPixelFormatViewUsage)
 	else
 		desc->setArrayLength(effectiveBaseDepth);
 
-	auto pixelFormat = GetMtlPixelFormat(format, isDepth);
-	desc->setPixelFormat(pixelFormat);
+	desc->setPixelFormat(m_pixelFormat);
 
 	MTL::TextureUsage usage = MTL::TextureUsageShaderRead;
 	if (needsPixelFormatViewUsage)

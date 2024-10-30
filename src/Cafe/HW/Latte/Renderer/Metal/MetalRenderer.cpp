@@ -155,7 +155,7 @@ MetalRenderer::MetalRenderer()
     */
 
     // Copy texture pipelines
-    auto copyTextureToColorPipelineDescriptor = MTL::RenderPipelineDescriptor::alloc()->init();
+    //auto copyTextureToColorPipelineDescriptor = MTL::RenderPipelineDescriptor::alloc()->init();
 
     // Hybrid pipelines
     if (m_isAppleGPU)
@@ -637,8 +637,17 @@ void MetalRenderer::texture_copyImageSubData(LatteTexture* src, sint32 srcMip, s
 {
     auto blitCommandEncoder = GetBlitCommandEncoder();
 
-    auto mtlSrc = static_cast<LatteTextureMtl*>(src)->GetTexture();
-    auto mtlDst = static_cast<LatteTextureMtl*>(dst)->GetTexture();
+    auto srcMtl = static_cast<LatteTextureMtl*>(src);
+    auto dstMtl = static_cast<LatteTextureMtl*>(dst);
+
+    if (!PixelFormatsCompatible(srcMtl->GetPixelFormat(), dstMtl->GetPixelFormat()))
+    {
+        srcMtl->RequirePixelFormatViewUsage();
+        dstMtl->RequirePixelFormatViewUsage();
+    }
+
+    MTL::Texture* mtlSrc = srcMtl->GetTexture();
+    MTL::Texture* mtlDst = dstMtl->GetTexture();
 
     uint32 srcBaseLayer = 0;
     uint32 dstBaseLayer = 0;

@@ -4,6 +4,7 @@
 #include <Metal/Metal.hpp>
 
 #include "Cafe/HW/Latte/Core/LatteConst.h"
+#include "Metal/MTLPixelFormat.hpp"
 
 struct MetalPixelFormatSupport
 {
@@ -81,4 +82,168 @@ inline bool CommandBufferCompleted(MTL::CommandBuffer* commandBuffer)
 {
     auto status = commandBuffer->status();
     return (status == MTL::CommandBufferStatusCompleted || status == MTL::CommandBufferStatusError);
+}
+
+enum class MetalPixelFormatLayout
+{
+    Invalid,
+
+    ABGR4,
+    B5G6R5,
+    BGR5A1,
+    A1BGR5,
+    R8,
+    RG8,
+    RGBA8,
+    RGB10A2,
+    BGR10A2,
+    RGBA16,
+    R16,
+    RG16,
+    R32,
+    RG11B10,
+    RG32,
+    RGBA32,
+    BC1,
+    BC2,
+    BC3,
+    BC4,
+    BC5,
+    D24S8,
+    D32S8,
+};
+
+inline MetalPixelFormatLayout GetPixelFormatLayout(MTL::PixelFormat format)
+{
+    switch (format)
+    {
+    case MTL::PixelFormatABGR4Unorm:
+        return MetalPixelFormatLayout::ABGR4;
+    case MTL::PixelFormatB5G6R5Unorm:
+        return MetalPixelFormatLayout::B5G6R5;
+    case MTL::PixelFormatBGR5A1Unorm:
+        return MetalPixelFormatLayout::BGR5A1;
+    case MTL::PixelFormatA1BGR5Unorm:
+        return MetalPixelFormatLayout::A1BGR5;
+    case MTL::PixelFormatR8Unorm:
+        return MetalPixelFormatLayout::R8;
+    case MTL::PixelFormatR8Snorm:
+        return MetalPixelFormatLayout::R8;
+    case MTL::PixelFormatR8Uint:
+        return MetalPixelFormatLayout::R8;
+    case MTL::PixelFormatR8Sint:
+        return MetalPixelFormatLayout::R8;
+    case MTL::PixelFormatRG8Unorm:
+        return MetalPixelFormatLayout::RG8;
+    case MTL::PixelFormatRG8Snorm:
+        return MetalPixelFormatLayout::RG8;
+    case MTL::PixelFormatRG8Uint:
+        return MetalPixelFormatLayout::RG8;
+    case MTL::PixelFormatRG8Sint:
+        return MetalPixelFormatLayout::RG8;
+    case MTL::PixelFormatRGBA8Unorm:
+        return MetalPixelFormatLayout::RGBA8;
+    case MTL::PixelFormatRGBA8Snorm:
+        return MetalPixelFormatLayout::RGBA8;
+    case MTL::PixelFormatRGBA8Uint:
+        return MetalPixelFormatLayout::RGBA8;
+    case MTL::PixelFormatRGBA8Sint:
+        return MetalPixelFormatLayout::RGBA8;
+    case MTL::PixelFormatRGBA8Unorm_sRGB:
+        return MetalPixelFormatLayout::RGBA8;
+    case MTL::PixelFormatRGB10A2Unorm:
+        return MetalPixelFormatLayout::RGB10A2;
+    case MTL::PixelFormatRGBA16Snorm:
+        return MetalPixelFormatLayout::RGBA16;
+    case MTL::PixelFormatRGB10A2Uint:
+        return MetalPixelFormatLayout::RGB10A2;
+    case MTL::PixelFormatRGBA16Sint:
+        return MetalPixelFormatLayout::RGBA16;
+    case MTL::PixelFormatBGR10A2Unorm:
+        return MetalPixelFormatLayout::BGR10A2;
+    case MTL::PixelFormatR16Unorm:
+        return MetalPixelFormatLayout::R16;
+    case MTL::PixelFormatR16Snorm:
+        return MetalPixelFormatLayout::R16;
+    case MTL::PixelFormatR16Uint:
+        return MetalPixelFormatLayout::R16;
+    case MTL::PixelFormatR16Sint:
+        return MetalPixelFormatLayout::R16;
+    case MTL::PixelFormatR16Float:
+        return MetalPixelFormatLayout::R16;
+    case MTL::PixelFormatRG16Unorm:
+        return MetalPixelFormatLayout::R16;
+    case MTL::PixelFormatRG16Snorm:
+        return MetalPixelFormatLayout::RG16;
+    case MTL::PixelFormatRG16Uint:
+        return MetalPixelFormatLayout::RG16;
+    case MTL::PixelFormatRG16Sint:
+        return MetalPixelFormatLayout::RG16;
+    case MTL::PixelFormatRG16Float:
+        return MetalPixelFormatLayout::RG16;
+    case MTL::PixelFormatRGBA16Unorm:
+        return MetalPixelFormatLayout::RGBA16;
+    case MTL::PixelFormatRGBA16Uint:
+        return MetalPixelFormatLayout::RGBA16;
+    case MTL::PixelFormatRGBA16Float:
+        return MetalPixelFormatLayout::RGBA16;
+    case MTL::PixelFormatR32Float:
+        return MetalPixelFormatLayout::R32;
+    case MTL::PixelFormatRG11B10Float:
+        return MetalPixelFormatLayout::RG11B10;
+    case MTL::PixelFormatR32Uint:
+        return MetalPixelFormatLayout::R32;
+    case MTL::PixelFormatR32Sint:
+        return MetalPixelFormatLayout::R32;
+    case MTL::PixelFormatRG32Uint:
+        return MetalPixelFormatLayout::RG32;
+    case MTL::PixelFormatRG32Sint:
+        return MetalPixelFormatLayout::RG32;
+    case MTL::PixelFormatRG32Float:
+        return MetalPixelFormatLayout::RG32;
+    case MTL::PixelFormatRGBA32Uint:
+        return MetalPixelFormatLayout::RGBA32;
+    case MTL::PixelFormatRGBA32Sint:
+        return MetalPixelFormatLayout::RGBA32;
+    case MTL::PixelFormatRGBA32Float:
+        return MetalPixelFormatLayout::RGBA32;
+    case MTL::PixelFormatBC1_RGBA:
+        return MetalPixelFormatLayout::BC1;
+    case MTL::PixelFormatBC1_RGBA_sRGB:
+        return MetalPixelFormatLayout::BC1;
+    case MTL::PixelFormatBC2_RGBA:
+        return MetalPixelFormatLayout::BC2;
+    case MTL::PixelFormatBC2_RGBA_sRGB:
+        return MetalPixelFormatLayout::BC2;
+    case MTL::PixelFormatBC3_RGBA:
+        return MetalPixelFormatLayout::BC3;
+    case MTL::PixelFormatBC3_RGBA_sRGB:
+        return MetalPixelFormatLayout::BC3;
+    case MTL::PixelFormatBC4_RUnorm:
+        return MetalPixelFormatLayout::BC4;
+    case MTL::PixelFormatBC4_RSnorm:
+        return MetalPixelFormatLayout::BC4;
+    case MTL::PixelFormatBC5_RGUnorm:
+        return MetalPixelFormatLayout::BC5;
+    case MTL::PixelFormatBC5_RGSnorm:
+        return MetalPixelFormatLayout::BC5;
+    case MTL::PixelFormatDepth24Unorm_Stencil8:
+        return MetalPixelFormatLayout::D24S8;
+    case MTL::PixelFormatDepth32Float:
+        return MetalPixelFormatLayout::R32; // TODO: correct?
+    case MTL::PixelFormatDepth32Float_Stencil8:
+        return MetalPixelFormatLayout::D32S8;
+    case MTL::PixelFormatDepth16Unorm:
+        return MetalPixelFormatLayout::R16; // TODO: correct?
+    default:
+        return MetalPixelFormatLayout::Invalid;
+    }
+}
+
+inline bool PixelFormatsCompatible(MTL::PixelFormat format1, MTL::PixelFormat format2)
+{
+    if (format1 == format2)
+        return true;
+
+    return GetPixelFormatLayout(format1) == GetPixelFormatLayout(format2);
 }

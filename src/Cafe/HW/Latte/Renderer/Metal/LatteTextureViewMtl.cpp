@@ -64,26 +64,17 @@ LatteTextureViewMtl::~LatteTextureViewMtl()
     Release();
 }
 
-void LatteTextureViewMtl::RequirePixelFormatViewUsage(bool& baseRecreated, bool& viewRecreated)
+MTL::Texture* LatteTextureViewMtl::GetSwizzledView(uint32 gpuSamplerSwizzle)
 {
-    baseRecreated = m_baseTexture->RequirePixelFormatViewUsage();
+    // Check if the view needs to be recreated
     if (!m_hasPixelFormatViewUsage && m_baseTexture->HasPixelFormatViewUsage())
     {
         Release();
         m_rgbaView = CreateSwizzledView(RGBA_SWIZZLE);
 
         m_hasPixelFormatViewUsage = true;
-
-        viewRecreated = true;
     }
-    else
-    {
-        viewRecreated = false;
-    }
-}
 
-MTL::Texture* LatteTextureViewMtl::GetSwizzledView(uint32 gpuSamplerSwizzle)
-{
     // Mask out
     gpuSamplerSwizzle &= 0x0FFF0000;
 

@@ -22,6 +22,10 @@ public:
 	    return m_texture;
 	}
 
+	MTL::PixelFormat GetPixelFormat() const {
+        return m_pixelFormat;
+    }
+
 	bool HasPixelFormatViewUsage() const {
         return m_hasPixelFormatViewUsage;
     }
@@ -41,6 +45,7 @@ private:
 	class MetalRenderer* m_mtlr;
 
 	MTL::Texture* m_texture;
+	MTL::PixelFormat m_pixelFormat;
 	bool m_hasPixelFormatViewUsage = false;
 
 	Latte::E_GX2SURFFMT m_format;

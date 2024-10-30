@@ -14,8 +14,6 @@ public:
 	LatteTextureViewMtl(class MetalRenderer* mtlRenderer, class LatteTextureMtl* texture, Latte::E_DIM dim, Latte::E_GX2SURFFMT format, sint32 firstMip, sint32 mipCount, sint32 firstSlice, sint32 sliceCount);
 	~LatteTextureViewMtl();
 
-	void RequirePixelFormatViewUsage(bool& baseRecreated, bool& viewRecreated);
-
     MTL::Texture* GetSwizzledView(uint32 gpuSamplerSwizzle);
 
     MTL::Texture* GetRGBAView()

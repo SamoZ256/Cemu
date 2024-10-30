@@ -1,5 +1,6 @@
 #include "Cafe/HW/Latte/Renderer/Metal/CachedFBOMtl.h"
 #include "Cafe/HW/Latte/Renderer/Metal/LatteTextureViewMtl.h"
+#include "Cafe/HW/Latte/Renderer/Metal/LatteTextureMtl.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
 #include "HW/Latte/Core/LatteConst.h"
@@ -71,7 +72,7 @@ MTL::RenderPassDescriptor* CachedFBOMtl::GetRenderPassDescriptor()
         if (!textureView)
             continue;
 
-        if (!m_colorTextureViewsUsages[i] && textureView->HasPixelFormatViewUsage())
+        if (!m_colorTextureViewsUsages[i] && static_cast<LatteTextureMtl*>(textureView->baseTexture)->HasPixelFormatViewUsage())
         {
             m_renderPassDescriptor->colorAttachments()->object(i)->setTexture(textureView->GetRGBAView());
             m_colorTextureViewsUsages[i] = true;
