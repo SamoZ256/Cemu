@@ -22,6 +22,10 @@ public:
 	    return m_texture;
 	}
 
+	bool HasPixelFormatViewUsage() const {
+        return m_hasPixelFormatViewUsage;
+    }
+
 	Latte::E_GX2SURFFMT GetFormat() const {
         return m_format;
     }
