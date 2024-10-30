@@ -190,8 +190,12 @@ void LatteTextureViewMtl::Release()
     m_rgbaView->release();
 	for (sint32 i = 0; i < std::size(m_viewCache); i++)
     {
-        if (m_viewCache[i].key != INVALID_SWIZZLE)
-            m_viewCache[i].texture->release();
+        auto& view = m_viewCache[i];
+        if (view.key != INVALID_SWIZZLE)
+        {
+            view.texture->release();
+            view.key = INVALID_SWIZZLE;
+        }
     }
 
     for (auto& [key, texture] : m_fallbackViewCache)
