@@ -2,7 +2,7 @@
 
 #include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
 #include "Common/precompiled.h"
-#include "Metal/MTLResource.hpp"
+
 #include <utility>
 
 struct MetalBufferRange

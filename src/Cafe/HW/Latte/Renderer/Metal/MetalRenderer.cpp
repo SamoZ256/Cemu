@@ -101,7 +101,7 @@ MetalRenderer::MetalRenderer()
     for (uint32 i = 0; i < METAL_SHADER_TYPE_TOTAL; i++)
     {
         for (uint32 j = 0; j < MAX_MTL_BUFFERS; j++)
-            m_state.m_uniformBufferOffsets[i][j] = INVALID_OFFSET;
+            m_state.m_uniformBuffers[i][j].offset = INVALID_OFFSET;
     }
 
     // Utility shader library
@@ -806,22 +806,22 @@ void MetalRenderer::surfaceCopy_copySurfaceWithFormatConversion(LatteTexture* so
 
 void MetalRenderer::bufferCache_init(const sint32 bufferSize)
 {
-    m_memoryManager->InitBufferCache(bufferSize);
+    m_memoryManager->GetBufferCache().InitBufferCache(bufferSize);
 }
 
 void MetalRenderer::bufferCache_upload(uint8* buffer, sint32 size, uint32 bufferOffset)
 {
-    m_memoryManager->UploadToBufferCache(buffer, bufferOffset, size);
+    m_memoryManager->GetBufferCache().UploadToBufferCache(buffer, bufferOffset, size);
 }
 
 void MetalRenderer::bufferCache_copy(uint32 srcOffset, uint32 dstOffset, uint32 size)
 {
-    m_memoryManager->CopyBufferCache(srcOffset, dstOffset, size);
+    m_memoryManager->GetBufferCache().CopyBufferCache(srcOffset, dstOffset, size);
 }
 
 void MetalRenderer::bufferCache_copyStreamoutToMainBuffer(uint32 srcOffset, uint32 dstOffset, uint32 size)
 {
-    CopyBufferToBuffer(GetXfbRingBuffer(), srcOffset, m_memoryManager->GetBufferCache(), dstOffset, size, MTL::RenderStageVertex | MTL::RenderStageMesh, ALL_MTL_RENDER_STAGES);
+    CopyBufferToBuffer(GetXfbRingBuffer(), srcOffset, m_memoryManager->GetBufferCache().GetBufferCache(), dstOffset, size, MTL::RenderStageVertex | MTL::RenderStageMesh, ALL_MTL_RENDER_STAGES);
 }
 
 void MetalRenderer::buffer_bindVertexBuffer(uint32 bufferIndex, uint32 offset, uint32 size)
@@ -845,7 +845,7 @@ void MetalRenderer::buffer_bindVertexBuffer(uint32 bufferIndex, uint32 offset, u
 
 void MetalRenderer::buffer_bindUniformBuffer(LatteConst::ShaderType shaderType, uint32 bufferIndex, uint32 offset, uint32 size)
 {
-    m_state.m_uniformBufferOffsets[GetMtlGeneralShaderType(shaderType)][bufferIndex] = offset;
+    m_state.m_uniformBuffers[GetMtlGeneralShaderType(shaderType)][bufferIndex] = {offset, size};
 }
 
 RendererShader* MetalRenderer::shader_create(RendererShader::ShaderType type, uint64 baseHash, uint64 auxHash, const std::string& source, bool isGameShader, bool isGfxPackShader)
@@ -1218,11 +1218,14 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
             }
             */
 
-            MTL::Buffer* buffer = m_memoryManager->GetBufferCache();
+            MTL::Buffer* buffer = m_memoryManager->GetBufferCache().GetBufferCache();
             size_t offset = m_state.m_vertexBuffers[i].offset;
 
             // Bind
             SetBuffer(renderCommandEncoder, GetMtlShaderType(vertexShader->shaderType, usesGeometryShader), buffer, offset, GET_MTL_VERTEX_BUFFER_INDEX(i));
+
+            // Mark region as used
+            m_memoryManager->GetBufferCache().MarkRegionAsUsed(vertexBufferRange.offset, vertexBufferRange.size);
         }
     }
 
@@ -1665,6 +1668,9 @@ void MetalRenderer::CommitCommandBuffer()
             //m_commandQueue->insertDebugCaptureBoundary();
         }
     }
+
+    // TODO: where should this be called?
+    m_memoryManager->GetBufferCache().CheckForFinishedCommandBuffers();
 }
 
 bool MetalRenderer::AcquireDrawable(bool mainWindow)
@@ -1916,11 +1922,14 @@ void MetalRenderer::BindStageResources(MTL::RenderCommandEncoder* renderCommandE
     			continue;
     		}
 
-    		size_t offset = m_state.m_uniformBufferOffsets[GetMtlGeneralShaderType(shader->shaderType)][i];
-    		if (offset == INVALID_OFFSET)
+    		auto uniformBuffer = m_state.m_uniformBuffers[GetMtlGeneralShaderType(shader->shaderType)][i];
+    		if (uniformBuffer.offset == INVALID_OFFSET)
                 continue;
 
-            SetBuffer(renderCommandEncoder, mtlShaderType, m_memoryManager->GetBufferCache(), offset, binding);
+            SetBuffer(renderCommandEncoder, mtlShaderType, m_memoryManager->GetBufferCache().GetBufferCache(), uniformBuffer.offset, binding);
+
+            // Mark region as used
+            m_memoryManager->GetBufferCache().MarkRegionAsUsed(uniformBuffer.offset, uniformBuffer.size);
 		}
 	}
 

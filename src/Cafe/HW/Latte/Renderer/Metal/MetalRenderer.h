@@ -144,7 +144,10 @@ struct MetalState
     MetalBoundBuffer m_vertexBuffers[MAX_MTL_BUFFERS] = {{}};
     // TODO: find out what is the max number of bound textures on the Wii U
     class LatteTextureViewMtl* m_textures[64] = {nullptr};
-    size_t m_uniformBufferOffsets[METAL_GENERAL_SHADER_TYPE_TOTAL][MAX_MTL_BUFFERS];
+    struct {
+        size_t offset;
+        size_t size;
+    } m_uniformBuffers[METAL_GENERAL_SHADER_TYPE_TOTAL][MAX_MTL_BUFFERS];
 
     MTL::Viewport m_viewport;
     MTL::ScissorRect m_scissor;
