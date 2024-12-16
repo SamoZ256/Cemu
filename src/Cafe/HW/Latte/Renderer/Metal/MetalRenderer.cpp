@@ -20,8 +20,7 @@
 #include "Cemu/Logging/CemuLogging.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteConst.h"
-#include "Foundation/NSString.hpp"
-#include "Metal/MTLDevice.hpp"
+#include "Cafe/HW/Latte/ISA/LatteReg.h"
 #include "config/CemuConfig.h"
 #include "gui/guiWrapper.h"
 
@@ -34,6 +33,14 @@
 extern bool hasValidFramebufferAttached;
 
 float supportBufferData[512 * 4];
+
+union FloatBitfield
+{
+    uint32 raw;
+    float value;
+};
+
+constexpr float DEPTH_BIAS_HACK = 0.001f;
 
 // Defined in the OpenGL renderer
 void LatteDraw_handleSpecialState8_clearAsDepth();
@@ -1132,38 +1139,42 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 	uint32 cullBack = polygonControlReg.get_CULL_BACK();
 	uint32 polyOffsetFrontEnable = polygonControlReg.get_OFFSET_FRONT_ENABLED();
 
+	FloatBitfield frontScale{.value = 0.0f};
+   	FloatBitfield frontOffset{.value = 0.0f};
+   	FloatBitfield offsetClamp{.value = 0.0f};
+
 	if (polyOffsetFrontEnable)
 	{
-    	uint32 frontScaleU32 = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_SCALE.getRawValue();
-    	uint32 frontOffsetU32 = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_OFFSET.getRawValue();
-    	uint32 offsetClampU32 = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_CLAMP.getRawValue();
-
-        if (frontOffsetU32 != encoderState.m_depthBias || frontScaleU32 != encoderState.m_depthSlope || offsetClampU32 != encoderState.m_depthClamp)
-        {
-           	float frontScale = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_SCALE.get_SCALE();
-           	float frontOffset = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_OFFSET.get_OFFSET();
-           	float offsetClamp = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_CLAMP.get_CLAMP();
-
-           	frontScale /= 16.0f;
-
-            renderCommandEncoder->setDepthBias(frontOffset, frontScale, offsetClamp);
-
-            encoderState.m_depthBias = frontOffsetU32;
-            encoderState.m_depthSlope = frontScaleU32;
-            encoderState.m_depthClamp = offsetClampU32;
-        }
+    	frontScale = {.raw = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_SCALE.getRawValue()};
+        frontScale.value /= 16.0f;
+       	frontOffset = {.raw = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_OFFSET.getRawValue()};
+       	offsetClamp = {.raw = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_CLAMP.getRawValue()};
 	}
-	else
-	{
-	    if (0 != encoderState.m_depthBias || 0 != encoderState.m_depthSlope || 0 != encoderState.m_depthClamp)
-		{
-	        renderCommandEncoder->setDepthBias(0.0f, 0.0f, 0.0f);
 
-			encoderState.m_depthBias = 0;
-			encoderState.m_depthSlope = 0;
-			encoderState.m_depthClamp = 0;
+	// Apply depth bias hack if enabled
+	if (true) // TODO
+	{
+	    // Filter out
+		bool depthEnable = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_ENABLE();
+		auto depthFunc = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_FUNC();
+		bool depthWriteEnable = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_WRITE_ENABLE();
+
+	    if (depthEnable && (depthFunc == Latte::E_COMPAREFUNC::LESS || depthFunc == Latte::E_COMPAREFUNC::LEQUAL) && depthWriteEnable && m_state.m_activeFBO.m_fbo->calculateNumColorBuffers() == 0)
+		{
+	        frontOffset.value += DEPTH_BIAS_HACK;
+			if (frontScale.value == 0.0f)
+			    frontScale.value = 1.0f;
 		}
 	}
+
+    if (frontOffset.raw != encoderState.m_depthBias || frontScale.raw != encoderState.m_depthSlope || offsetClamp.raw != encoderState.m_depthClamp)
+    {
+        renderCommandEncoder->setDepthBias(frontOffset.value, frontScale.value, offsetClamp.value);
+
+        encoderState.m_depthBias = frontOffset.raw;
+        encoderState.m_depthSlope = frontScale.raw;
+        encoderState.m_depthClamp = offsetClamp.raw;
+    }
 
 	// Depth clip mode
 	cemu_assert_debug(LatteGPUState.contextNew.PA_CL_CLIP_CNTL.get_ZCLIP_NEAR_DISABLE() == LatteGPUState.contextNew.PA_CL_CLIP_CNTL.get_ZCLIP_FAR_DISABLE()); // near or far clipping can be disabled individually
