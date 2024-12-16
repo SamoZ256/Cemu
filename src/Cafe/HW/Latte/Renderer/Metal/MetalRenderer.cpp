@@ -21,6 +21,7 @@
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteConst.h"
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
+#include "GameProfile/GameProfile.h"
 #include "config/CemuConfig.h"
 #include "gui/guiWrapper.h"
 
@@ -1152,7 +1153,7 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 	}
 
 	// Apply depth bias hack if enabled
-	if (true) // TODO
+	if (g_current_game_profile->GetDepthBiasHack())
 	{
 	    // Filter out
 		bool depthEnable = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_ENABLE();

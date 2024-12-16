@@ -42,6 +42,7 @@ private:
 	wxChoice* m_shader_mul_accuracy;
 	wxChoice* m_fast_math;
 	wxChoice* m_buffer_cache_mode;
+	wxChoice* m_depth_bias_hack;
 	//wxChoice* m_cache_accuracy;
 
 	// audio
