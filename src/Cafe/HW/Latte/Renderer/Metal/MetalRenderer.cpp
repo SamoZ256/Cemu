@@ -1162,9 +1162,13 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 
 	    if (depthEnable && (depthFunc == Latte::E_COMPAREFUNC::LESS || depthFunc == Latte::E_COMPAREFUNC::LEQUAL) && depthWriteEnable && m_state.m_activeFBO.m_fbo->calculateNumColorBuffers() == 0)
 		{
+		    if (frontScale.value != 1.0f)
+			{
+			    cemuLog_logOnce(LogType::Force, "The depth bias hack had to change depth bias from {} to 0.0f and depth scale from {} to 1.0f", frontOffset.value, frontScale.value);
+				frontOffset.value = 0.0f;
+				frontScale.value = 1.0f;
+			}
 	        frontOffset.value += DEPTH_BIAS_HACK;
-			if (frontScale.value == 0.0f)
-			    frontScale.value = 1.0f;
 		}
 	}
 
