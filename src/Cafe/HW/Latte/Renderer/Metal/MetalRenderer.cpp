@@ -1155,20 +1155,38 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 	// Apply depth bias hack if enabled
 	if (g_current_game_profile->GetDepthBiasHack())
 	{
+	    // Potential depth prepass
+
 	    // Filter out
 		bool depthEnable = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_ENABLE();
 		auto depthFunc = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_FUNC();
 		bool depthWriteEnable = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_WRITE_ENABLE();
 
-	    if (depthEnable && (depthFunc == Latte::E_COMPAREFUNC::LESS || depthFunc == Latte::E_COMPAREFUNC::LEQUAL) && depthWriteEnable && m_state.m_activeFBO.m_fbo->calculateNumColorBuffers() == 0)
+		bool depthFuncLess = (depthFunc == Latte::E_COMPAREFUNC::LESS || depthFunc == Latte::E_COMPAREFUNC::LEQUAL);
+		bool depthFuncGreater = (depthFunc == Latte::E_COMPAREFUNC::GREATER || depthFunc == Latte::E_COMPAREFUNC::GEQUAL);
+
+		auto depthBuffer = m_state.m_activeFBO.m_fbo->depthBuffer.texture;
+
+	    if (depthEnable && (depthFuncLess || depthFuncGreater) && depthWriteEnable && depthBuffer && m_state.m_activeFBO.m_fbo->calculateNumColorBuffers() == 0)
 		{
-		    if (frontScale.value != 1.0f)
-			{
-			    cemuLog_logOnce(LogType::Force, "The depth bias hack had to change depth bias from {} to 0.0f and depth scale from {} to 1.0f", frontOffset.value, frontScale.value);
-				frontOffset.value = 0.0f;
-				frontScale.value = 1.0f;
-			}
-	        frontOffset.value += DEPTH_BIAS_HACK;
+    		// Shadow maps are usually square textures
+    		bool isLikelyAShadowMap = (depthBuffer && depthBuffer->baseTexture->width == depthBuffer->baseTexture->height);
+
+            if (!isLikelyAShadowMap)
+            {
+    		    if (frontScale.value != 1.0f)
+    			{
+    			    cemuLog_logOnce(LogType::Force, "The depth bias hack had to change depth bias from {} to 0.0f and depth scale from {} to 1.0f", frontOffset.value, frontScale.value);
+    				frontOffset.value = 0.0f;
+    				frontScale.value = 1.0f;
+    			}
+
+    			// Invert the bias if the depth function is GREATER or GEQUAL
+    	        frontOffset.value += (depthFuncLess ? DEPTH_BIAS_HACK : -DEPTH_BIAS_HACK);
+
+                // Store the depth func for the main pass
+                m_lastDepthPrepassDepthFuncWasLess = depthFuncLess;
+            }
 		}
 	}
 

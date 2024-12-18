@@ -1,5 +1,6 @@
 #include "Cafe/HW/Latte/Renderer/Metal/MetalDepthStencilCache.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
+#include "GameProfile/GameProfile.h"
 #include "HW/Latte/ISA/RegDefines.h"
 #include "HW/Latte/Renderer/Metal/LatteToMtl.h"
 #include "Metal/MTLDepthStencil.hpp"
@@ -29,6 +30,17 @@ MTL::DepthStencilState* MetalDepthStencilCache::GetDepthStencilState(const Latte
 	if (depthEnable)
 	{
 	    desc->setDepthWriteEnabled(depthWriteEnable);
+
+		// Apply the depth stencil hack
+		if (g_current_game_profile->GetDepthBiasHack())
+		{
+		    // Potential main pass
+
+    		// A small depth bias was applied in the depth prepass, using EQUAL depth func would cause the objects to not render
+    		if (depthFunc == Latte::E_COMPAREFUNC::EQUAL)
+    		    depthFunc = (m_mtlr->LastDepthPrepassDepthFuncWasLess() ? Latte::E_COMPAREFUNC::LEQUAL : Latte::E_COMPAREFUNC::GEQUAL);
+		}
+
 	    desc->setDepthCompareFunction(GetMtlCompareFunc(depthFunc));
 	}
 

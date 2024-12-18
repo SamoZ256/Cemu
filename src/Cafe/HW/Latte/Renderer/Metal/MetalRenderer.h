@@ -454,6 +454,11 @@ public:
         m_occlusionQuery.m_lastCommandBuffer = GetAndRetainCurrentCommandBufferIfNotCompleted();
     }
 
+    bool LastDepthPrepassDepthFuncWasLess() const
+    {
+        return m_lastDepthPrepassDepthFuncWasLess;
+    }
+
 private:
 	MetalLayerHandle m_mainLayer;
 	MetalLayerHandle m_padLayer;
@@ -526,6 +531,9 @@ private:
 
 	// State
 	MetalState m_state;
+
+	// Depth prepass hack
+	bool m_lastDepthPrepassDepthFuncWasLess = true;
 
 	MetalLayerHandle& GetLayer(bool mainWindow)
 	{
