@@ -207,7 +207,13 @@ if (ENABLE_OPENGL)
 endif()
 
 if (ENABLE_METAL)
+    set(SPIRV_CROSS_CLI OFF)
+    set(SPIRV_CROSS_ENABLE_HLSL OFF)
+    set(SPIRV_CROSS_ENABLE_C_API OFF)
+    add_subdirectory(dependencies/SPIRV-Cross)
+
     include_directories(${CMAKE_SOURCE_DIR}/dependencies/metal-cpp)
+    include_directories(${CMAKE_SOURCE_DIR}/dependencies/SPIRV-Cross)
 
     add_definitions(-DENABLE_METAL=1)
 endif()

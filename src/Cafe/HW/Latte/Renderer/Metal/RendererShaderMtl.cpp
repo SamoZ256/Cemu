@@ -14,6 +14,8 @@ static bool s_isLoadingShadersMtl{false};
 #include <glslang/Public/ShaderLang.h>
 #include <glslang/SPIRV/GlslangToSpv.h>
 
+#include "spirv_msl.hpp"
+
 extern std::atomic_int g_compiled_shaders_total;
 extern std::atomic_int g_compiled_shaders_async;
 
@@ -236,8 +238,14 @@ void RendererShaderMtl::Shutdown()
 }
 
 RendererShaderMtl::RendererShaderMtl(MetalRenderer* mtlRenderer, ShaderType type, uint64 baseHash, uint64 auxHash, bool isGameShader, bool isGfxPackShader, const std::string& mslCode)
-	: RendererShader(type, baseHash, auxHash, isGameShader, isGfxPackShader), m_mtlr{mtlRenderer}, m_mslCode{mslCode}
+	: RendererShader(type, baseHash, auxHash, isGameShader, isGfxPackShader), m_mtlr{mtlRenderer}
 {
+    // Compile Vulkan GLSL to SPIR-V and then to MSL in case of gfx pack shaders
+    if (isGfxPackShader)
+        m_mslCode = TranslateGlslToMsl(mslCode);
+    else
+        m_mslCode = mslCode;
+
 	// start async compilation
 	shaderMtlThreadPool.s_compilationQueueMutex.lock();
 	m_compilationState.setValue(COMPILATION_STATE::QUEUED);
@@ -297,13 +305,6 @@ bool RendererShaderMtl::ShouldCountCompilation() const
 
 void RendererShaderMtl::CompileInternal()
 {
-    // Compile Vulkan GLSL to SPIR-V and then to MSL in case of gfx pack shaders
-    NS::String* mslCodeNS;
-    if (isGfxPackShader)
-        mslCodeNS = ToNSString(TranslateGlslToMsl(m_mslCode));
-    else
-        mslCodeNS = ToNSString(m_mslCode);
-  
     MTL::CompileOptions* options = MTL::CompileOptions::alloc()->init();
     // TODO: always disable fast math for problematic shaders
     if (g_current_game_profile->GetFastMath())
@@ -312,7 +313,7 @@ void RendererShaderMtl::CompileInternal()
         options->setPreserveInvariance(true);
 
     NS::Error* error = nullptr;
-	MTL::Library* library = m_mtlr->GetDevice()->newLibrary(mslCodeNS, options, &error);
+	MTL::Library* library = m_mtlr->GetDevice()->newLibrary(ToNSString(m_mslCode), options, &error);
 	options->release();
 	if (error)
     {
@@ -434,5 +435,13 @@ std::string RendererShaderMtl::TranslateGlslToMsl(const std::string& glslCode)
 
 	GlslangToSpv(*Program.getIntermediate(state), spirvBuffer, &logger, &spvOptions);
 
-	return "SUCCESS";
+	spirv_cross::CompilerMSL mslCompler(std::move(spirvBuffer));
+
+	//spirv_cross::ShaderResources resources = mslCompler.get_shader_resources();
+
+	// Options
+	spirv_cross::CompilerMSL::Options options;
+	mslCompler.set_msl_options(options);
+
+	return mslCompler.compile();
 }

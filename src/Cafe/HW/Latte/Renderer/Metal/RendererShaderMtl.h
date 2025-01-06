@@ -74,6 +74,6 @@ private:
 	void CompileInternal();
 
 	void FinishCompilation();
-  
+
 	std::string TranslateGlslToMsl(const std::string& glslCode);
 };

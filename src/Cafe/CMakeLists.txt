@@ -584,6 +584,8 @@ if(ENABLE_METAL)
         HW/Latte/LegacyShaderDecompiler/LatteDecompilerEmitMSLHeader.hpp
     )
 
+    target_link_libraries(CemuCafe PRIVATE spirv-cross-core spirv-cross-msl)
+
     #target_link_libraries(CemuCafe PRIVATE
     #    "-framework Metal"
     #    "-framework QuartzCore"
