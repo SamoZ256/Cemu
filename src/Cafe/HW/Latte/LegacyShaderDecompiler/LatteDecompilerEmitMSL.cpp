@@ -631,14 +631,7 @@ static void _emitUniformAccessCode(LatteDecompilerShaderContext* shaderContext, 
 		}
 		cemu_assert_debug(remappedUniformEntry);
 		_emitTypeConversionPrefixMSL(shaderContext, LATTE_DECOMPILER_DTYPE_SIGNED_INT, requiredType);
-		if(shaderContext->shader->shaderType == LatteConst::ShaderType::Vertex )
-			src->addFmt("supportBuffer.remappedVS[{}]", remappedUniformEntry->mappedIndex);
-		else if(shaderContext->shader->shaderType == LatteConst::ShaderType::Pixel )
-			src->addFmt("supportBuffer.remappedPS[{}]", remappedUniformEntry->mappedIndex);
-		else if(shaderContext->shader->shaderType == LatteConst::ShaderType::Geometry )
-			src->addFmt("supportBuffer.remappedGS[{}]", remappedUniformEntry->mappedIndex);
-		else
-			debugBreakpoint();
+		src->addFmt("supportBuffer.remapped[{}]", remappedUniformEntry->mappedIndex);
 		_appendChannelAccess(src, aluInstruction->sourceOperand[operandIndex].chan);
 		_emitTypeConversionSuffixMSL(shaderContext, LATTE_DECOMPILER_DTYPE_SIGNED_INT, requiredType);
 	}
@@ -646,14 +639,7 @@ static void _emitUniformAccessCode(LatteDecompilerShaderContext* shaderContext, 
 	{
 		// uniform registers are accessed with unpredictable (dynamic) offset
 		_emitTypeConversionPrefixMSL(shaderContext, LATTE_DECOMPILER_DTYPE_SIGNED_INT, requiredType);
-		if(shaderContext->shader->shaderType == LatteConst::ShaderType::Vertex )
-			src->add("supportBuffer.uniformRegisterVS[");
-		else if (shaderContext->shader->shaderType == LatteConst::ShaderType::Pixel)
-			src->add("supportBuffer.uniformRegisterPS[");
-		else if(shaderContext->shader->shaderType == LatteConst::ShaderType::Geometry )
-			src->add("supportBuffer.uniformRegisterGS[");
-		else
-			debugBreakpoint();
+		src->add("supportBuffer.uniformRegister[");
 		_emitUniformAccessIndexCode(shaderContext, aluInstruction, operandIndex);
 		src->add("]");
 
@@ -863,7 +849,7 @@ static void _emitOperandInputCode(LatteDecompilerShaderContext* shaderContext, L
 	else if( GPU7_ALU_SRC_IS_LITERAL(aluInstruction->sourceOperand[operandIndex].sel) )
 	{
 		if( requiredType == LATTE_DECOMPILER_DTYPE_SIGNED_INT )
-			src->addFmt("0x{:x}", aluInstruction->literalData.w[aluInstruction->sourceOperand[operandIndex].chan]);
+			src->addFmt("int(0x{:x})", aluInstruction->literalData.w[aluInstruction->sourceOperand[operandIndex].chan]);
 		else if( requiredType == LATTE_DECOMPILER_DTYPE_UNSIGNED_INT )
 			src->addFmt("uint(0x{:x})", aluInstruction->literalData.w[aluInstruction->sourceOperand[operandIndex].chan]);
 		else if (requiredType == LATTE_DECOMPILER_DTYPE_FLOAT)
@@ -1345,19 +1331,23 @@ static void _emitALUOP2InstructionCode(LatteDecompilerShaderContext* shaderConte
 	}
 	else if( aluInstruction->opcode == ALU_OP2_INST_ADD_INT )
 		_emitALUOperationBinary<LATTE_DECOMPILER_DTYPE_SIGNED_INT>(shaderContext, aluInstruction, " + ");
-	else if( aluInstruction->opcode == ALU_OP2_INST_MAX_INT || aluInstruction->opcode == ALU_OP2_INST_MIN_INT )
+	else if( aluInstruction->opcode == ALU_OP2_INST_MAX_INT || aluInstruction->opcode == ALU_OP2_INST_MIN_INT ||
+			 aluInstruction->opcode == ALU_OP2_INST_MAX_UINT || aluInstruction->opcode == ALU_OP2_INST_MIN_UINT)
 	{
 		// not verified
+		bool isUnsigned = aluInstruction->opcode == ALU_OP2_INST_MAX_UINT || aluInstruction->opcode == ALU_OP2_INST_MIN_UINT;
+		auto opType = isUnsigned ? LATTE_DECOMPILER_DTYPE_UNSIGNED_INT : LATTE_DECOMPILER_DTYPE_SIGNED_INT;
 		_emitInstructionOutputVariableName(shaderContext, aluInstruction);
-		if( aluInstruction->opcode == ALU_OP2_INST_MAX_INT )
-			src->add(" = max(");
+		src->add(" = ");
+		_emitTypeConversionPrefixMSL(shaderContext, opType, outputType);
+		if( aluInstruction->opcode == ALU_OP2_INST_MAX_INT || aluInstruction->opcode == ALU_OP2_INST_MAX_UINT )
+			src->add("max(");
 		else
-			src->add(" = min(");
-		_emitTypeConversionPrefixMSL(shaderContext, LATTE_DECOMPILER_DTYPE_SIGNED_INT, outputType);
-		_emitOperandInputCode(shaderContext, aluInstruction, 0, LATTE_DECOMPILER_DTYPE_SIGNED_INT);
+			src->add("min(");
+		_emitOperandInputCode(shaderContext, aluInstruction, 0, opType);
 		src->add(", ");
-		_emitOperandInputCode(shaderContext, aluInstruction, 1, LATTE_DECOMPILER_DTYPE_SIGNED_INT);
-		_emitTypeConversionSuffixMSL(shaderContext, LATTE_DECOMPILER_DTYPE_SIGNED_INT, outputType);
+		_emitOperandInputCode(shaderContext, aluInstruction, 1, opType);
+		_emitTypeConversionSuffixMSL(shaderContext, opType, outputType);
 		src->add(");" _CRLF);
 	}
 	else if( aluInstruction->opcode == ALU_OP2_INST_SUB_INT )
@@ -2254,6 +2244,7 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
 
 	bool unnormalizationHandled = false;
 	bool useTexelCoordinates = false;
+	bool isRead = ((texOpcode == GPU7_TEX_INST_SAMPLE && (texInstruction->textureFetch.unnormalized[0] && texInstruction->textureFetch.unnormalized[1] && texInstruction->textureFetch.unnormalized[2] && texInstruction->textureFetch.unnormalized[3])) || texOpcode == GPU7_TEX_INST_LD);
 
 	// handle illegal combinations
 	if (texOpcode == GPU7_TEX_INST_FETCH4 && (texDim == Latte::E_DIM::DIM_1D || texDim == Latte::E_DIM::DIM_1D_ARRAY))
@@ -2280,8 +2271,7 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
 	if (!emulateCompare)
 	{
 	    src->add(".");
-    	if ((texOpcode == GPU7_TEX_INST_SAMPLE && (texInstruction->textureFetch.unnormalized[0] && texInstruction->textureFetch.unnormalized[1] && texInstruction->textureFetch.unnormalized[2] && texInstruction->textureFetch.unnormalized[3])) ||
-    	    texOpcode == GPU7_TEX_INST_LD)
+    	if (isRead)
     	{
     		if (hasOffset)
     			cemu_assert_unimplemented();
@@ -2330,7 +2320,7 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
 		// handle integer coordinates for texelFetch
 		if (texDim == Latte::E_DIM::DIM_2D || texDim == Latte::E_DIM::DIM_2D_MSAA)
 		{
-			src->add("int2(");
+			src->add("uint2(");
 			src->add("float2(");
 			_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 0, texCoordDataType);
 			src->addFmt(", ");
@@ -2344,7 +2334,7 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
 		else if (texDim == Latte::E_DIM::DIM_1D)
 		{
 			// VC DS games forget to initialize textures and use texel fetch on an uninitialized texture (a dim of 0 maps to 1D)
-			src->add("int(");
+			src->add("uint(");
 			src->add("float(");
 			_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 0, (texOpcode == GPU7_TEX_INST_LD) ? LATTE_DECOMPILER_DTYPE_SIGNED_INT : LATTE_DECOMPILER_DTYPE_FLOAT);
 			src->addFmt(")*supportBuffer.tex{}Scale.x", texInstruction->textureFetch.textureIndex);
@@ -2367,8 +2357,9 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
 				_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 0, LATTE_DECOMPILER_DTYPE_FLOAT);
 				src->add(", ");
 				_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 1, LATTE_DECOMPILER_DTYPE_FLOAT);
-				src->add("), ");
+				src->add("), uint(rint(");
 				_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 2, LATTE_DECOMPILER_DTYPE_FLOAT);
+				src->add("))");
 
 				src->addFmt(", {}", _getTexGPRAccess(shaderContext, texInstruction->srcGpr, LATTE_DECOMPILER_DTYPE_FLOAT, texInstruction->textureFetch.srcSel[3], -1, -1, -1, tempBuffer0));
 			}
@@ -2410,8 +2401,9 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
 			_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 0, LATTE_DECOMPILER_DTYPE_FLOAT);
 			src->add(", ");
 			_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 1, LATTE_DECOMPILER_DTYPE_FLOAT);
-			src->add("), ");
+			src->add("), uint(rint(");
 			_emitTEXSampleCoordInputComponent(shaderContext, texInstruction, 2, LATTE_DECOMPILER_DTYPE_FLOAT);
+			src->add("))");
 		}
 		else if(texDim == Latte::E_DIM::DIM_3D)
 		{
@@ -2455,7 +2447,7 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
 		// 1D textures don't support lod
 		if (texDim != Latte::E_DIM::DIM_1D && texDim != Latte::E_DIM::DIM_1D_ARRAY)
 		{
-    		if( texOpcode == GPU7_TEX_INST_SAMPLE_L || texOpcode == GPU7_TEX_INST_SAMPLE_LB || texOpcode == GPU7_TEX_INST_SAMPLE_C_L)
+    		if (texOpcode == GPU7_TEX_INST_SAMPLE_L || texOpcode == GPU7_TEX_INST_SAMPLE_LB || texOpcode == GPU7_TEX_INST_SAMPLE_C_L)
     		{
     		    src->add(", ");
     			if (texOpcode == GPU7_TEX_INST_SAMPLE_LB)
@@ -2470,7 +2462,7 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
     				src->add(")");
     			}
     		}
-    		else if( texOpcode == GPU7_TEX_INST_SAMPLE_LZ || texOpcode == GPU7_TEX_INST_SAMPLE_C_LZ )
+    		else if (texOpcode == GPU7_TEX_INST_SAMPLE_LZ || texOpcode == GPU7_TEX_INST_SAMPLE_C_LZ)
     		{
     			src->add(", level(0.0)");
     		}
@@ -2480,15 +2472,16 @@ static void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContex
 	if (texOpcode == GPU7_TEX_INST_SAMPLE_G)
 	{
 		if (texDim == Latte::E_DIM::DIM_2D ||
-			texDim == Latte::E_DIM::DIM_1D )
+			texDim == Latte::E_DIM::DIM_1D)
 		{
-			src->add(",gradH.xy,gradV.xy");
+			src->add(", gradient2d(gradH.xy, gradV.xy)");
 		}
 		else
 		{
 			cemu_assert_unimplemented();
 		}
 	}
+
 	// offset
 	if( texOpcode == GPU7_TEX_INST_SAMPLE_L || texOpcode == GPU7_TEX_INST_SAMPLE_LZ || texOpcode == GPU7_TEX_INST_SAMPLE_C_LZ || texOpcode == GPU7_TEX_INST_SAMPLE || texOpcode == GPU7_TEX_INST_SAMPLE_C )
 	{
@@ -2704,16 +2697,16 @@ static void _emitTEXGetCompTexLodCode(LatteDecompilerShaderContext* shaderContex
 	{
 		// 3 coordinates
 		if(shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_FLOAT)
-			src->addFmt("float4(textureQueryLod(tex{}, {}.{}{}{}),0.0,0.0)", texInstruction->textureFetch.textureIndex, _getRegisterVarName(shaderContext, texInstruction->srcGpr), resultElemTable[texInstruction->textureFetch.srcSel[0]], resultElemTable[texInstruction->textureFetch.srcSel[1]], resultElemTable[texInstruction->textureFetch.srcSel[2]]);
+			src->addFmt("float4(textureCalculateLod(tex{}, samplr{}, {}.{}{}{}),0.0,0.0)", texInstruction->textureFetch.textureIndex, texInstruction->textureFetch.textureIndex, _getRegisterVarName(shaderContext, texInstruction->srcGpr), resultElemTable[texInstruction->textureFetch.srcSel[0]], resultElemTable[texInstruction->textureFetch.srcSel[1]], resultElemTable[texInstruction->textureFetch.srcSel[2]]);
 		else
-			src->addFmt("float4(textureQueryLod(tex{}, bitCast<float>({}.{}{}{})),0.0,0.0)", texInstruction->textureFetch.textureIndex, _getRegisterVarName(shaderContext, texInstruction->srcGpr), resultElemTable[texInstruction->textureFetch.srcSel[0]], resultElemTable[texInstruction->textureFetch.srcSel[1]], resultElemTable[texInstruction->textureFetch.srcSel[2]]);
+			src->addFmt("float4(textureCalculateLod(tex{}, samplr{}, bitCast<float>({}.{}{}{})),0.0,0.0)", texInstruction->textureFetch.textureIndex, texInstruction->textureFetch.textureIndex, _getRegisterVarName(shaderContext, texInstruction->srcGpr), resultElemTable[texInstruction->textureFetch.srcSel[0]], resultElemTable[texInstruction->textureFetch.srcSel[1]], resultElemTable[texInstruction->textureFetch.srcSel[2]]);
 	}
 	else
 	{
 		if (shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_FLOAT)
-			src->addFmt("float4(textureQueryLod(tex{}, {}.{}{}),0.0,0.0)", texInstruction->textureFetch.textureIndex, _getRegisterVarName(shaderContext, texInstruction->srcGpr), resultElemTable[texInstruction->textureFetch.srcSel[0]], resultElemTable[texInstruction->textureFetch.srcSel[1]]);
+			src->addFmt("float4(textureCalculateLod(tex{}, samplr{}, {}.{}{}),0.0,0.0)", texInstruction->textureFetch.textureIndex, texInstruction->textureFetch.textureIndex, _getRegisterVarName(shaderContext, texInstruction->srcGpr), resultElemTable[texInstruction->textureFetch.srcSel[0]], resultElemTable[texInstruction->textureFetch.srcSel[1]]);
 		else
-			src->addFmt("float4(textureQueryLod(tex{}, bitCast<float>({}.{}{})),0.0,0.0)", texInstruction->textureFetch.textureIndex, _getRegisterVarName(shaderContext, texInstruction->srcGpr), resultElemTable[texInstruction->textureFetch.srcSel[0]], resultElemTable[texInstruction->textureFetch.srcSel[1]]);
+			src->addFmt("float4(textureCalculateLod(tex{}, samplr{}, bitCast<float>({}.{}{})),0.0,0.0)", texInstruction->textureFetch.textureIndex, texInstruction->textureFetch.textureIndex, _getRegisterVarName(shaderContext, texInstruction->srcGpr), resultElemTable[texInstruction->textureFetch.srcSel[0]], resultElemTable[texInstruction->textureFetch.srcSel[1]]);
 		debugBreakpoint();
 	}
 
@@ -3133,14 +3126,14 @@ static void _emitExportCode(LatteDecompilerShaderContext* shaderContext, LatteDe
 				src->add("float4 finalPos = ");
 				_emitExportGPRReadCode(shaderContext, cfInstruction, LATTE_DECOMPILER_DTYPE_FLOAT, 0);
 				src->add(";" _CRLF);
-				src->add("finalPos.xy = finalPos.xy * supportBuffer.windowSpaceToClipSpaceTransform - float2(1.0,1.0);");
-				src->add("out.position = finalPos;");
+				src->add("finalPos.xy = finalPos.xy * supportBuffer.windowSpaceToClipSpaceTransform - float2(1.0,1.0);" _CRLF);
+				src->add("SET_POSITION(finalPos);");
 			}
 			else
 			{
-				src->add("out.position = ");
+				src->add("SET_POSITION(");
 				_emitExportGPRReadCode(shaderContext, cfInstruction, LATTE_DECOMPILER_DTYPE_FLOAT, 0);
-				src->add(";" _CRLF);
+				src->add(");" _CRLF);
 			}
 		}
 		else if (cfInstruction->exportType == 1 && cfInstruction->exportArrayBase == GPU7_DECOMPILER_CF_EXPORT_POINT_SIZE )
@@ -3382,7 +3375,7 @@ static void _emitCFRingWriteCode(LatteDecompilerShaderContext* shaderContext, La
 				src->addFmt(" = ");
 				_emitExportGPRReadCode(shaderContext, cfInstruction, LATTE_DECOMPILER_DTYPE_FLOAT, burstIndex);
 				src->add(";" _CRLF);
-				src->add("out.position = pos;" _CRLF);
+				src->add("SET_POSITION(pos);" _CRLF);
 				src->add("}" _CRLF);
 			}
 			else if (parameterExportType == 2 && parameterExportBase < 16)
@@ -3620,7 +3613,6 @@ void LatteDecompiler_emitClauseCodeMSL(LatteDecompilerShaderContext* shaderConte
 		// write point size
 		if (shaderContext->analyzer.outputPointSize && shaderContext->analyzer.writesPointSize == false)
 			src->add("out.pointSize = supportBuffer.pointSize;" _CRLF);
-		src->add("out.position.z = (out.position.z + out.position.w) / 2.0;" _CRLF);
 		src->add("mesh.set_vertex(vertexIndex, out);" _CRLF);
 		src->add("vertexIndex++;" _CRLF);
 		// increment transform feedback pointer
@@ -3748,7 +3740,6 @@ void LatteDecompiler_emitHelperFunctions(LatteDecompilerShaderContext* shaderCon
 
 	// Sample compare emulate
 	// TODO: only add when needed
-
 	// TODO: lod_options overload
 	// TODO: when the sampler has linear min mag filter, use gather and filter manually
 	// TODO: offset?
@@ -3758,6 +3749,15 @@ void LatteDecompiler_emitHelperFunctions(LatteDecompilerShaderContext* shaderCon
 	    "return compareValue < tex.sample(samplr, coord).x ? 1.0 : 0.0;\r\n"
 	"}\r\n"
 	);
+
+	// Texture calculate lod
+	// TODO: only add when needed
+	fCStr_shaderSource->add(""
+	"template<typename TextureT, typename CoordT>\r\n"
+	"float2 textureCalculateLod(TextureT tex, sampler samplr, CoordT coord) {\r\n"
+        "float lod = tex.calculate_unclamped_lod(samplr, coord);\r\n"
+        "return float2(floor(lod), fract(lod));\r\n"
+	"}\r\n");
 
 	// clamp
 	fCStr_shaderSource->add(""
@@ -3868,10 +3868,12 @@ static void LatteDecompiler_emitAttributeImport(LatteDecompilerShaderContext* sh
 void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader)
 {
     bool isRectVertexShader = (static_cast<LattePrimitiveMode>(shaderContext->contextRegisters[mmVGT_PRIMITIVE_TYPE]) == LattePrimitiveMode::RECTS);
+    bool usesGeometryShader = (shaderContext->options->usesGeometryShader || isRectVertexShader);
+    bool fetchVertexManually = (usesGeometryShader || (shaderContext->fetchShader && shaderContext->fetchShader->mtlFetchVertexManually));
 
     // Rasterization
     rasterizationEnabled = true;
-    if (shader->shaderType == LatteConst::ShaderType::Vertex && !(shaderContext->options->usesGeometryShader || isRectVertexShader))
+    if (shader->shaderType == LatteConst::ShaderType::Vertex && !usesGeometryShader)
     {
         rasterizationEnabled = !shaderContext->contextRegistersNew->PA_CL_CLIP_CNTL.get_DX_RASTERIZATION_KILL();
 
@@ -3899,7 +3901,7 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
     src->add("#include <metal_stdlib>" _CRLF);
     src->add("using namespace metal;" _CRLF);
 	// header part (definitions for inputs and outputs)
-	LatteDecompiler::emitHeader(shaderContext, isRectVertexShader, rasterizationEnabled);
+	LatteDecompiler::emitHeader(shaderContext, isRectVertexShader, fetchVertexManually, rasterizationEnabled);
 	// helper functions
 	LatteDecompiler_emitHelperFunctions(shaderContext, src);
 	const char* functionType = "";
@@ -3907,21 +3909,32 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
 	switch (shader->shaderType)
 	{
 	case LatteConst::ShaderType::Vertex:
-	    if (shaderContext->options->usesGeometryShader || isRectVertexShader)
+	    if (fetchVertexManually)
 		{
 		    // TODO: clean this up
-			// fetchVertex will modify vid in case of an indexed draw
+			// fetchVertex will modify vid in case of an object shader and an indexed draw
 
 			// Vertex buffers
             std::string vertexBufferDefinitions = "#define VERTEX_BUFFER_DEFINITIONS ";
             std::string vertexBuffers = "#define VERTEX_BUFFERS ";
-            std::string inputFetchDefinition = "VertexIn fetchVertex(thread uint& vid, device uint* indexBuffer, uint indexType VERTEX_BUFFER_DEFINITIONS) {\n";
+            std::string inputFetchDefinition = "VertexIn fetchVertex(";
+            if (usesGeometryShader)
+                inputFetchDefinition += "thread uint&";
+            else
+                inputFetchDefinition += "uint";
+            inputFetchDefinition += " vid, uint iid";
+            if (usesGeometryShader)
+                inputFetchDefinition += ", device uint* indexBuffer, uchar indexType";
+            inputFetchDefinition += " VERTEX_BUFFER_DEFINITIONS) {\n";
 
 			// Index buffer
-            inputFetchDefinition += "if (indexType == 1) // UShort\n";
-            inputFetchDefinition += "vid = ((device ushort*)indexBuffer)[vid];\n";
-            inputFetchDefinition += "else if (indexType == 2)\n";
-            inputFetchDefinition += "vid = ((device uint*)indexBuffer)[vid]; // UInt\n";
+			if (usesGeometryShader)
+			{
+                inputFetchDefinition += "if (indexType == 1) // UShort\n";
+                inputFetchDefinition += "vid = ((device ushort*)indexBuffer)[vid];\n";
+                inputFetchDefinition += "else if (indexType == 2) // UInt\n";
+                inputFetchDefinition += "vid = ((device uint*)indexBuffer)[vid];\n";
+			}
 
             inputFetchDefinition += "VertexIn in;\n";
             for (auto& bufferGroup : shaderContext->fetchShader->bufferGroups)
@@ -3994,11 +4007,22 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
                         break;
                     }
 
+                    // Get the fetch type
+                    std::string fetchTypeStr;
+                    if (attr.fetchType == LatteConst::VertexFetchType2::VERTEX_DATA)
+                        fetchTypeStr = "vid";
+                    else if (attr.fetchType == LatteConst::VertexFetchType2::INSTANCE_DATA)
+                        fetchTypeStr = "iid";
+                    else if (attr.fetchType == LatteConst::VertexFetchType2::NO_INDEX_OFFSET_DATA)
+                        fetchTypeStr = "0"; // TODO: correct?
+
                     // Fetch the attribute
-                    inputFetchDefinition += fmt::format("in.ATTRIBUTE_NAME{} = ", semanticId);
-                    inputFetchDefinition += fmt::format("uint4(*(device {}*)", formatName);
+                    inputFetchDefinition += fmt::format("in.ATTRIBUTE_NAME{} = uint4(uint", semanticId);
+                    if (componentCount != 1)
+                        inputFetchDefinition += fmt::format("{}", componentCount);
+                    inputFetchDefinition += fmt::format("(*(device {}*)", formatName);
                     inputFetchDefinition += fmt::format("(vertexBuffer{}", attr.attributeBufferIndex);
-                    inputFetchDefinition += fmt::format(" + vid * {} + {})", bufferStride, attr.offset);
+                    inputFetchDefinition += fmt::format(" + {} * {} + {}))", fetchTypeStr, bufferStride, attr.offset);
                     for (uint8 i = 0; i < (4 - componentCount); i++)
                         inputFetchDefinition += ", 0";
                     inputFetchDefinition += ");\n";
@@ -4028,7 +4052,10 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
 			src->add(vertexBuffers.c_str());
 			src->add("\n");
 			src->add(inputFetchDefinition.c_str());
+		}
 
+		if (usesGeometryShader)
+		{
 			functionType = "[[object, max_total_threads_per_threadgroup(VERTICES_PER_VERTEX_PRIMITIVE), max_total_threadgroups_per_mesh_grid(1)]]";
 			outputTypeName = "void";
 		}
@@ -4052,20 +4079,33 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
 	}
 	// start of main
 	src->addFmt("{} {} main0(", functionType, outputTypeName);
-	LatteDecompiler::emitInputs(shaderContext, isRectVertexShader);
+	LatteDecompiler::emitInputs(shaderContext, isRectVertexShader, fetchVertexManually);
 	src->add(") {" _CRLF);
-	if ((shaderContext->options->usesGeometryShader || isRectVertexShader) && (shader->shaderType == LatteConst::ShaderType::Vertex || shader->shaderType == LatteConst::ShaderType::Geometry))
+	if (fetchVertexManually && (shader->shaderType == LatteConst::ShaderType::Vertex || shader->shaderType == LatteConst::ShaderType::Geometry))
 	{
 	    if (shader->shaderType == LatteConst::ShaderType::Vertex)
 		{
-    	    // Calculate the imaginary vertex id
-    	    src->add("uint vid = tig * VERTICES_PER_VERTEX_PRIMITIVE + tid;" _CRLF);
-    		// TODO: don't hardcode the instance index
-    		src->add("uint iid = 0;" _CRLF);
-    		// Fetch the input
-    		src->add("VertexIn in = fetchVertex(vid, indexBuffer, indexType VERTEX_BUFFERS);" _CRLF);
-    		// Output is defined as object payload
-    		src->add("object_data VertexOut& out = objectPayload.vertexOut[tid];" _CRLF);
+            if (usesGeometryShader)
+            {
+           	    // Calculate the imaginary vertex id
+           	    src->add("uint vid = tig * VERTICES_PER_VERTEX_PRIMITIVE + tid;" _CRLF);
+          		src->add("uint iid = vid / supportBuffer.verticesPerInstance;" _CRLF);
+                src->add("vid %= supportBuffer.verticesPerInstance;" _CRLF);
+
+          		// Fetch the input
+          		src->add("VertexIn in = fetchVertex(vid, iid, indexBuffer, indexType VERTEX_BUFFERS);" _CRLF);
+
+          		// Output is defined as object payload
+          		src->add("object_data VertexOut& out = objectPayload.vertexOut[tid];" _CRLF);
+            }
+            else
+            {
+          		// Fetch the input
+          		src->add("VertexIn in = fetchVertex(vid, iid VERTEX_BUFFERS);" _CRLF);
+
+                if (rasterizationEnabled)
+                    src->add("VertexOut out;" _CRLF);
+            }
 		}
 		else if (shader->shaderType == LatteConst::ShaderType::Geometry)
 		{
@@ -4248,9 +4288,9 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
 			cemu_assert_debug((psInputTable->paramGen) == 1); // handle the other bits (the same set of coordinates with different perspective/projection settings?)
 			uint32 paramGenGPRIndex = psInputTable->paramGenGPR;
 			if (shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_FLOAT)
-				src->addFmt("{} = in.position.xyxy;" _CRLF, _getRegisterVarName(shaderContext, paramGenGPRIndex));
+				src->addFmt("{} = pointCoord.xyxy;" _CRLF, _getRegisterVarName(shaderContext, paramGenGPRIndex));
 			else
-				src->addFmt("{} = bitCast<int>(gl_PointCoord.xyxy);" _CRLF, _getRegisterVarName(shaderContext, paramGenGPRIndex));
+				src->addFmt("{} = bitCast<int>(pointCoord.xyxy);" _CRLF, _getRegisterVarName(shaderContext, paramGenGPRIndex));
 		}
 
 		for (sint32 i = 0; i < psInputTable->count; i++)
@@ -4271,27 +4311,12 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
 				continue;
 			}
 
-			// TODO: is the if statement even needed?
-			if (shaderContext->options->usesGeometryShader || isRectVertexShader)
-			{
-				// import from geometry shader
-				if (shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_SIGNED_INT)
-					src->addFmt("{} = as_type<int4>(in.passParameterSem{});" _CRLF, _getRegisterVarName(shaderContext, gprIndex), psInputSemanticId & 0x7F);
-				else if (shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_FLOAT)
-					src->addFmt("{} = in.passParameterSem{};" _CRLF, _getRegisterVarName(shaderContext, gprIndex), psInputSemanticId & 0x7F);
-				else
-					cemu_assert_unimplemented();
-			}
+			if (shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_SIGNED_INT)
+				src->addFmt("{} = bitCast<int>(in.passParameterSem{});" _CRLF, _getRegisterVarName(shaderContext, gprIndex), psInputSemanticId);
+			else if (shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_FLOAT)
+				src->addFmt("{} = in.passParameterSem{};" _CRLF, _getRegisterVarName(shaderContext, gprIndex), psInputSemanticId);
 			else
-			{
-				// import from vertex shader
-				if (shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_SIGNED_INT)
-					src->addFmt("{} = bitCast<int>(in.passParameterSem{});" _CRLF, _getRegisterVarName(shaderContext, gprIndex), psInputSemanticId);
-				else if (shaderContext->typeTracker.defaultDataType == LATTE_DECOMPILER_DTYPE_FLOAT)
-					src->addFmt("{} = in.passParameterSem{};" _CRLF, _getRegisterVarName(shaderContext, gprIndex), psInputSemanticId);
-				else
-					cemu_assert_unimplemented();
-			}
+				cemu_assert_unimplemented();
 		}
 		// front facing attribute
 		if (frontFace_enabled)
@@ -4320,7 +4345,7 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
 			src->add("out.pointSize = supportBuffer.pointSize;" _CRLF);
 	}
 
-	if ((shaderContext->options->usesGeometryShader || isRectVertexShader) && (shader->shaderType == LatteConst::ShaderType::Vertex || shader->shaderType == LatteConst::ShaderType::Geometry))
+	if (usesGeometryShader && (shader->shaderType == LatteConst::ShaderType::Vertex || shader->shaderType == LatteConst::ShaderType::Geometry))
 	{
     	if (shader->shaderType == LatteConst::ShaderType::Vertex)
     	{
@@ -4354,14 +4379,10 @@ void LatteDecompiler_emitMSLShader(LatteDecompilerShaderContext* shaderContext, 
         }
 	}
 
-    if (rasterizationEnabled)
+    if (rasterizationEnabled && (!usesGeometryShader || shader->shaderType == LatteConst::ShaderType::Pixel))
     {
-    	if (shader->shaderType == LatteConst::ShaderType::Vertex && !shaderContext->options->usesGeometryShader)
-    		src->add("out.position.z = (out.position.z + out.position.w) / 2.0;" _CRLF);
-
     	// Return
-    	if (!(shaderContext->options->usesGeometryShader || isRectVertexShader) || shader->shaderType == LatteConst::ShaderType::Pixel)
-            src->add("return out;" _CRLF);
+        src->add("return out;" _CRLF);
     }
 
 	// end of shader main

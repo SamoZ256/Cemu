@@ -32,13 +32,13 @@ void CemuConfig::Load(XMLConfigParser& parser)
 	mlc_path = mlc;
 
 	permanent_storage = parser.get("permanent_storage", permanent_storage);
-	
+
 	language = parser.get<sint32>("language", wxLANGUAGE_DEFAULT);
 	use_discord_presence = parser.get("use_discord_presence", true);
 	fullscreen_menubar = parser.get("fullscreen_menubar", false);
 	feral_gamemode = parser.get("feral_gamemode", false);
 	check_update = parser.get("check_update", check_update);
-	receive_untested_updates = parser.get("receive_untested_updates", check_update);
+	receive_untested_updates = parser.get("receive_untested_updates", receive_untested_updates);
 	save_screenshot = parser.get("save_screenshot", save_screenshot);
 	did_show_vulkan_warning = parser.get("vk_warning", did_show_vulkan_warning);
 	did_show_graphic_pack_download = parser.get("gp_download", did_show_graphic_pack_download);
@@ -102,7 +102,7 @@ void CemuConfig::Load(XMLConfigParser& parser)
 			cemuLog_log(LogType::Force, "config load error: can't load recently launched game file: {}", path);
 		}
 	}
-	
+
 	recent_nfc_files.clear();
 	auto nfc_parser = parser.get("RecentNFCFiles");
 	for (auto element = nfc_parser.get("Entry"); element.valid(); element = nfc_parser.get("Entry", element))
@@ -198,7 +198,7 @@ void CemuConfig::Load(XMLConfigParser& parser)
 			{
 				graphic_pack_entries[path].try_emplace("_disabled", "true");
 			}
-			
+
 			for (auto preset = element.get("Preset"); preset.valid(); preset = element.get("Preset", preset))
 			{
 				const std::string category = preset.get("category", "");
@@ -206,13 +206,14 @@ void CemuConfig::Load(XMLConfigParser& parser)
 				graphic_pack_entries[path].try_emplace(category, active_preset);
 			}
 		}
-		
+
 	}
 
 	// graphics
 	auto graphic = parser.get("Graphic");
 	graphic_api = graphic.get("api", kOpenGL);
-	graphic.get("device", graphic_device_uuid);
+	graphic.get("vkDevice", vk_graphic_device_uuid);
+	graphic.get("mtlDevice", mtl_graphic_device_uuid);
 	vsync = graphic.get("VSync", 0);
 	gx2drawdone_sync = graphic.get("GX2DrawdoneSync", true);
 	upscale_filter = graphic.get("UpscaleFilter", kBicubicHermiteFilter);
@@ -335,6 +336,7 @@ void CemuConfig::Load(XMLConfigParser& parser)
 	crash_dump = debug.get("CrashDumpUnix", crash_dump);
 #endif
 	gdb_port = debug.get("GDBPort", 1337);
+	gpu_capture_dir = debug.get("GPUCaptureDir", "");
 
 	// input
 	auto input = parser.get("Input");
@@ -346,6 +348,7 @@ void CemuConfig::Load(XMLConfigParser& parser)
 	auto usbdevices = parser.get("EmulatedUsbDevices");
 	emulated_usb_devices.emulate_skylander_portal = usbdevices.get("EmulateSkylanderPortal", emulated_usb_devices.emulate_skylander_portal);
 	emulated_usb_devices.emulate_infinity_base = usbdevices.get("EmulateInfinityBase", emulated_usb_devices.emulate_infinity_base);
+	emulated_usb_devices.emulate_dimensions_toypad = usbdevices.get("EmulateDimensionsToypad", emulated_usb_devices.emulate_dimensions_toypad);
 }
 
 void CemuConfig::Save(XMLConfigParser& parser)
@@ -373,7 +376,7 @@ void CemuConfig::Save(XMLConfigParser& parser)
 	// config.set("cpu_mode", cpu_mode.GetValue());
 	//config.set("console_region", console_region.GetValue());
 	config.set("console_language", console_language.GetValue());
-	
+
 	auto wpos = config.set("window_position");
 	wpos.set<sint32>("x", window_position.x);
 	wpos.set<sint32>("y", window_position.y);
@@ -408,13 +411,13 @@ void CemuConfig::Save(XMLConfigParser& parser)
 	{
 		launch_files_parser.set("Entry", entry.c_str());
 	}
-	
+
 	auto nfc_files_parser = config.set("RecentNFCFiles");
 	for (const auto& entry : recent_nfc_files)
 	{
 		nfc_files_parser.set("Entry", entry.c_str());
 	}
-		
+
 	// game paths
 	auto game_path_parser = config.set("GamePaths");
 	for (const auto& entry : game_paths)
@@ -455,11 +458,11 @@ void CemuConfig::Save(XMLConfigParser& parser)
 				entry.set_attribute("disabled", true);
 				continue;
 			}
-			
+
 			auto preset = entry.set("Preset");
 			if(!kv.first.empty())
 				preset.set("category", kv.first.c_str());
-			
+
 			preset.set("preset", kv.second.c_str());
 		}
 	}
@@ -467,7 +470,8 @@ void CemuConfig::Save(XMLConfigParser& parser)
 	// graphics
 	auto graphic = config.set("Graphic");
 	graphic.set("api", graphic_api);
-	graphic.set("device", graphic_device_uuid);
+	graphic.set("vkDevice", vk_graphic_device_uuid);
+	graphic.set("mtlDevice", mtl_graphic_device_uuid);
 	graphic.set("VSync", vsync);
 	graphic.set("GX2DrawdoneSync", gx2drawdone_sync);
 	//graphic.set("PrecompiledShaders", precompiled_shaders.GetValue());
@@ -534,6 +538,7 @@ void CemuConfig::Save(XMLConfigParser& parser)
 	debug.set("CrashDumpUnix", crash_dump.GetValue());
 #endif
 	debug.set("GDBPort", gdb_port);
+	debug.set("GPUCaptureDir", gpu_capture_dir.GetValue());
 
 	// input
 	auto input = config.set("Input");
@@ -545,6 +550,7 @@ void CemuConfig::Save(XMLConfigParser& parser)
 	auto usbdevices = config.set("EmulatedUsbDevices");
 	usbdevices.set("EmulateSkylanderPortal", emulated_usb_devices.emulate_skylander_portal.GetValue());
 	usbdevices.set("EmulateInfinityBase", emulated_usb_devices.emulate_infinity_base.GetValue());
+	usbdevices.set("EmulateDimensionsToypad", emulated_usb_devices.emulate_dimensions_toypad.GetValue());
 }
 
 GameEntry* CemuConfig::GetGameEntryByTitleId(uint64 titleId)

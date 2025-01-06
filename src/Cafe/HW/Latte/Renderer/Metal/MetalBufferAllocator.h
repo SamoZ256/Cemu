@@ -3,6 +3,7 @@
 #include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
 #include "Common/precompiled.h"
 #include "Metal/MTLResource.hpp"
+#include <utility>
 
 struct MetalBufferRange
 {
@@ -12,6 +13,8 @@ struct MetalBufferRange
 
 constexpr size_t BASE_ALLOCATION_SIZE = 8 * 1024 * 1024; // 8 MB
 constexpr size_t MAX_ALLOCATION_SIZE = 64 * 1024 * 1024; // 64 MB
+
+void LatteIndices_invalidateAll();
 
 template<typename BufferT>
 class MetalBufferAllocator
@@ -143,6 +146,8 @@ public:
 
 protected:
     class MetalRenderer* m_mtlr;
+
+    // TODO: make these template arguments
     bool m_isCPUAccessible;
     MTL::ResourceOptions m_options;
 
@@ -152,8 +157,7 @@ protected:
     {
         auto& buffer = m_buffers[bufferIndex];
         buffer.m_freeRanges.clear();
-        buffer.m_freeRanges.reserve(1);
-        buffer.m_freeRanges.push_back({0, m_buffers[bufferIndex].m_buffer->length()});
+        buffer.m_freeRanges.push_back({0, buffer.m_buffer->length()});
     }
 };
 
@@ -162,7 +166,8 @@ typedef MetalBufferAllocator<Empty> MetalDefaultBufferAllocator;
 
 struct MetalSyncedBuffer
 {
-    std::vector<MTL::CommandBuffer*> m_commandBuffers;
+    uint32 m_commandBufferCount = 0;
+    MTL::CommandBuffer* m_lastCommandBuffer = nullptr;
     uint32 m_lock = 0;
 
     bool IsLocked() const
@@ -189,24 +194,21 @@ public:
 
         buffer.m_data.m_lock--;
 
-        // TODO: is this really necessary?
         // Release the buffer if it wasn't released due to the lock
-        if (!buffer.m_data.IsLocked() && buffer.m_data.m_commandBuffers.empty())
+        if (!buffer.m_data.IsLocked() && buffer.m_data.m_commandBufferCount == 0)
             FreeBuffer(bufferIndex);
     }
 
     void EndFrame()
     {
-        CheckForCompletedCommandBuffers();
-
         // Unlock all buffers
         for (uint32_t i = 0; i < m_buffers.size(); i++)
         {
             auto& buffer = m_buffers[i];
 
-            if (buffer.m_data.m_lock != 0)
+            if (buffer.m_data.IsLocked())
             {
-                if (buffer.m_data.m_commandBuffers.empty())
+                if (buffer.m_data.m_commandBufferCount == 0)
                     FreeBuffer(i);
 
                 buffer.m_data.m_lock = 0;
@@ -218,7 +220,7 @@ public:
         if (!m_buffers.empty())
         {
             auto& backBuffer = m_buffers.back();
-            if (backBuffer.m_data.m_commandBuffers.empty())
+            if (backBuffer.m_data.m_commandBufferCount == 0)
             {
                 // Release the back buffer if it hasn't been accessed for a while
                 if (m_framesSinceBackBufferAccess >= BUFFER_RELEASE_FRAME_TRESHOLD)
@@ -246,39 +248,32 @@ public:
     void SetActiveCommandBuffer(MTL::CommandBuffer* commandBuffer)
     {
         m_activeCommandBuffer = commandBuffer;
+        if (commandBuffer)
+        {
+            auto result = m_executingCommandBuffers.emplace(std::make_pair(m_activeCommandBuffer, std::vector<uint32>{}));
+            cemu_assert_debug(result.second);
+            m_activeCommandBufferIt = result.first;
+        }
+        else
+        {
+            m_activeCommandBufferIt = m_executingCommandBuffers.end();
+        }
     }
 
-    void CheckForCompletedCommandBuffers(/*MTL::CommandBuffer* commandBuffer, bool erase = true*/)
+    void CommandBufferFinished(MTL::CommandBuffer* commandBuffer)
     {
-        for (uint32_t i = 0; i < m_buffers.size(); i++)
+        auto it = m_executingCommandBuffers.find(commandBuffer);
+        for (auto bufferIndex : it->second)
         {
-            auto& buffer = m_buffers[i];
-            for (uint32_t j = 0; j < buffer.m_data.m_commandBuffers.size(); j++)
-            {
-                if (m_mtlr->CommandBufferCompleted(buffer.m_data.m_commandBuffers[j]))
-                {
-                    if (buffer.m_data.m_commandBuffers.size() == 1)
-                    {
-                        if (!buffer.m_data.IsLocked())
-                        {
-                            // All command buffers using it have finished execution, we can use it again
-                            FreeBuffer(i);
-                        }
+            auto& buffer = m_buffers[bufferIndex];
+            buffer.m_data.m_commandBufferCount--;
 
-                        buffer.m_data.m_commandBuffers.clear();
-                        break;
-                    }
-                    else
-                    {
-                        buffer.m_data.m_commandBuffers.erase(buffer.m_data.m_commandBuffers.begin() + j);
-                        j--;
-                    }
-                }
-            }
+            // TODO: is this neccessary?
+            if (!buffer.m_data.IsLocked() && buffer.m_data.m_commandBufferCount == 0)
+                FreeBuffer(bufferIndex);
         }
 
-        //if (erase)
-        //    m_commandBuffersFrames.erase(commandBuffer);
+        m_executingCommandBuffers.erase(it);
     }
 
     MTL::Buffer* GetBuffer(uint32 bufferIndex)
@@ -286,8 +281,12 @@ public:
         cemu_assert_debug(m_activeCommandBuffer);
 
         auto& buffer = m_buffers[bufferIndex];
-        if (buffer.m_data.m_commandBuffers.empty() || buffer.m_data.m_commandBuffers.back() != m_activeCommandBuffer/*std::find(buffer.m_commandBuffers.begin(), buffer.m_commandBuffers.end(), m_activeCommandBuffer) == buffer.m_commandBuffers.end()*/)
-            buffer.m_data.m_commandBuffers.push_back(m_activeCommandBuffer);
+        if (buffer.m_data.m_commandBufferCount == 0 || buffer.m_data.m_lastCommandBuffer != m_activeCommandBuffer)
+        {
+            m_activeCommandBufferIt->second.push_back(bufferIndex);
+            buffer.m_data.m_commandBufferCount++;
+            buffer.m_data.m_lastCommandBuffer = m_activeCommandBuffer;
+        }
 
         return buffer.m_buffer;
     }
@@ -347,6 +346,9 @@ public:
 
 private:
     MTL::CommandBuffer* m_activeCommandBuffer = nullptr;
+
+    std::map<MTL::CommandBuffer*, std::vector<uint32>> m_executingCommandBuffers;
+    std::map<MTL::CommandBuffer*, std::vector<uint32>>::iterator m_activeCommandBufferIt;
 
     uint16 m_framesSinceBackBufferAccess = 0;
 };

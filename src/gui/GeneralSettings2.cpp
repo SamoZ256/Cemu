@@ -10,6 +10,7 @@
 #include <wx/collpane.h>
 #include <wx/clrpicker.h>
 #include <wx/cshelp.h>
+#include <wx/textctrl.h>
 #include <wx/textdlg.h>
 #include <wx/hyperlink.h>
 
@@ -27,6 +28,9 @@
 
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
+#if ENABLE_METAL
+#include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
+#endif
 #include "Cafe/Account/Account.h"
 
 #include <boost/tokenizer.hpp>
@@ -92,6 +96,19 @@ public:
 private:
 	VulkanRenderer::DeviceInfo m_device_info;
 };
+
+#if ENABLE_METAL
+class wxMetalUUID : public wxClientData
+{
+public:
+	wxMetalUUID(const MetalRenderer::DeviceInfo& info)
+		: m_device_info(info) {}
+	const MetalRenderer::DeviceInfo& GetDeviceInfo() const { return m_device_info; }
+
+private:
+	MetalRenderer::DeviceInfo m_device_info;
+};
+#endif
 
 class wxAccountData : public wxClientData
 {
@@ -314,7 +331,7 @@ wxPanel* GeneralSettings2::AddGraphicsPage(wxNotebook* notebook)
 		{
 			choices[api_size++] = "Vulkan";
 		}
-#ifdef __APPLE__
+#if ENABLE_METAL
         choices[api_size++] = "Metal";
 #endif
 
@@ -876,6 +893,21 @@ wxPanel* GeneralSettings2::AddDebugPage(wxNotebook* notebook)
 		debug_panel_sizer->Add(debug_row, 0, wxALL | wxEXPAND, 5);
 	}
 
+	{
+		auto* debug_row = new wxFlexGridSizer(0, 2, 0, 0);
+		debug_row->SetFlexibleDirection(wxBOTH);
+		debug_row->SetNonFlexibleGrowMode(wxFLEX_GROWMODE_SPECIFIED);
+
+		debug_row->Add(new wxStaticText(panel, wxID_ANY, _("GPU capture save directory"), wxDefaultPosition, wxDefaultSize, 0), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+
+		m_gpu_capture_dir = new wxTextCtrl(panel, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_DONTWRAP);
+		m_gpu_capture_dir->SetMinSize(wxSize(150, -1));
+		m_gpu_capture_dir->SetToolTip(_("Cemu will save the GPU captures done by selecting Debug -> GPU capture in the menu bar in this directory. If a debugger with support for GPU captures (like Xcode) is attached, the capture will be opened in that debugger instead. If such debugger is not attached, METAL_CAPTURE_ENABLED must be set to 1 as an environment variable."));
+
+		debug_row->Add(m_gpu_capture_dir, 0, wxALL | wxEXPAND, 5);
+		debug_panel_sizer->Add(debug_row, 0, wxALL | wxEXPAND, 5);
+	}
+
 	panel->SetSizerAndFit(debug_panel_sizer);
 
 	return panel;
@@ -934,6 +966,7 @@ void GeneralSettings2::StoreConfig()
 	config.fullscreen_menubar = m_fullscreen_menubar->IsChecked();
 	config.check_update = m_auto_update->IsChecked();
 	config.save_screenshot = m_save_screenshot->IsChecked();
+	config.receive_untested_updates = m_receive_untested_releases->IsChecked();
 #if BOOST_OS_LINUX && defined(ENABLE_FERAL_GAMEMODE)
     config.feral_gamemode = m_feral_gamemode->IsChecked();
 #endif
@@ -1022,16 +1055,32 @@ void GeneralSettings2::StoreConfig()
 	config.graphic_api = (GraphicAPI)m_graphic_api->GetSelection();
 
 	selection = m_graphic_device->GetSelection();
-	if(selection != wxNOT_FOUND)
+	if (config.graphic_api == GraphicAPI::kVulkan)
 	{
-		const auto* info = (wxVulkanUUID*)m_graphic_device->GetClientObject(selection);
-		if(info)
-			config.graphic_device_uuid = info->GetDeviceInfo().uuid;
-		else
-			config.graphic_device_uuid = {};
+    	if (selection != wxNOT_FOUND)
+    	{
+    		const auto* info = (wxVulkanUUID*)m_graphic_device->GetClientObject(selection);
+    		if (info)
+    			config.vk_graphic_device_uuid = info->GetDeviceInfo().uuid;
+    		else
+    			config.vk_graphic_device_uuid = {};
+    	}
+    	else
+    		config.vk_graphic_device_uuid = {};
 	}
-	else
-		config.graphic_device_uuid = {};
+	else if (config.graphic_api == GraphicAPI::kMetal)
+	{
+        if (selection != wxNOT_FOUND)
+    	{
+    		const auto* info = (wxMetalUUID*)m_graphic_device->GetClientObject(selection);
+    		if (info)
+    			config.mtl_graphic_device_uuid = info->GetDeviceInfo().uuid;
+    		else
+    			config.mtl_graphic_device_uuid = {};
+    	}
+    	else
+    		config.mtl_graphic_device_uuid = {};
+	}
 
 
 	config.vsync = m_vsync->GetSelection();
@@ -1068,6 +1117,7 @@ void GeneralSettings2::StoreConfig()
 	// debug
 	config.crash_dump = (CrashDump)m_crash_dump->GetSelection();
 	config.gdb_port = m_gdb_port->GetValue();
+	config.gpu_capture_dir = m_gpu_capture_dir->GetValue().utf8_string();
 
 	g_config.Save();
 }
@@ -1499,7 +1549,7 @@ void GeneralSettings2::HandleGraphicsApiSelection()
 		selection = GetConfig().vsync;
 
 	m_vsync->Clear();
-	if(m_graphic_api->GetSelection() == 0)
+	if (m_graphic_api->GetSelection() == 0)
 	{
 		// OpenGL
 		m_vsync->AppendString(_("Off"));
@@ -1515,7 +1565,7 @@ void GeneralSettings2::HandleGraphicsApiSelection()
 		m_gx2drawdone_sync->Enable();
 		m_async_compile->Disable();
 	}
-	else
+	else if (m_graphic_api->GetSelection() == 1)
 	{
 		// Vulkan
 		m_gx2drawdone_sync->Disable();
@@ -1544,13 +1594,50 @@ void GeneralSettings2::HandleGraphicsApiSelection()
 			const auto& config = GetConfig();
 			for(size_t i = 0; i < devices.size(); ++i)
 			{
-				if(config.graphic_device_uuid == devices[i].uuid)
+				if(config.vk_graphic_device_uuid == devices[i].uuid)
 				{
 					m_graphic_device->SetSelection(i);
 					break;
 				}
 			}
 		}
+	}
+	else
+	{
+		// Metal
+		m_gx2drawdone_sync->Disable();
+		m_async_compile->Enable();
+
+		// TODO: vsync options
+		m_vsync->AppendString(_("Off"));
+		m_vsync->AppendString(_("Double buffering"));
+		m_vsync->AppendString(_("Triple buffering"));
+
+		m_vsync->Select(selection);
+
+		m_graphic_device->Enable();
+		auto devices = MetalRenderer::GetDevices();
+		m_graphic_device->Clear();
+#if ENABLE_METAL
+		if(!devices.empty())
+		{
+			for (const auto& device : devices)
+			{
+				m_graphic_device->Append(device.name, new wxMetalUUID(device));
+			}
+			m_graphic_device->SetSelection(0);
+
+			const auto& config = GetConfig();
+			for (size_t i = 0; i < devices.size(); ++i)
+			{
+				if (config.mtl_graphic_device_uuid == devices[i].uuid)
+				{
+					m_graphic_device->SetSelection(i);
+					break;
+				}
+			}
+		}
+#endif
 	}
 }
 
@@ -1724,6 +1811,7 @@ void GeneralSettings2::ApplyConfig()
 	// debug
 	m_crash_dump->SetSelection((int)config.crash_dump.GetValue());
 	m_gdb_port->SetValue(config.gdb_port.GetValue());
+	m_gpu_capture_dir->SetValue(wxHelper::FromUtf8(config.gpu_capture_dir.GetValue()));
 }
 
 void GeneralSettings2::OnAudioAPISelected(wxCommandEvent& event)

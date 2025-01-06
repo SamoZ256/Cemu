@@ -251,7 +251,16 @@ void InfoLog_PrintActiveSettings()
 	if (ActiveSettings::GetGraphicsAPI() == GraphicAPI::kVulkan)
 	{
 		cemuLog_log(LogType::Force, "Async compile: {}", GetConfig().async_compile.GetValue() ? "true" : "false");
-		if(!GetConfig().vk_accurate_barriers.GetValue())
+		if (!GetConfig().vk_accurate_barriers.GetValue())
+			cemuLog_log(LogType::Force, "Accurate barriers are disabled!");
+	}
+	else if (ActiveSettings::GetGraphicsAPI() == GraphicAPI::kMetal)
+	{
+	    cemuLog_log(LogType::Force, "Async compile: {}", GetConfig().async_compile.GetValue() ? "true" : "false");
+		cemuLog_log(LogType::Force, "Fast math: {}", g_current_game_profile->GetFastMath() ? "true" : "false");
+		cemuLog_log(LogType::Force, "Buffer cache type: {}", g_current_game_profile->GetBufferCacheMode());
+		cemuLog_log(LogType::Force, "Position invariance: {}", g_current_game_profile->GetPositionInvariance() ? "true" : "false");
+		if (!GetConfig().vk_accurate_barriers.GetValue())
 			cemuLog_log(LogType::Force, "Accurate barriers are disabled!");
 	}
 	cemuLog_log(LogType::Force, "Console language: {}", stdx::to_underlying(config.console_language.GetValue()));
@@ -396,7 +405,7 @@ void cemu_initForGame()
 		// replace any known function signatures with our HLE implementations and patch bugs in the games
 		GamePatch_scan();
 	}
-	LatteGPUState.alwaysDisplayDRC = ActiveSettings::DisplayDRCEnabled();
+	LatteGPUState.isDRCPrimary = ActiveSettings::DisplayDRCEnabled();
 	InfoLog_PrintActiveSettings();
 	Latte_Start();
 	// check for debugger entrypoint bp
@@ -637,40 +646,40 @@ namespace CafeSystem
         fsc_unmount("/cemuBossStorage/", FSC_PRIORITY_BASE);
     }
 
-	STATUS_CODE LoadAndMountForegroundTitle(TitleId titleId)
+	PREPARE_STATUS_CODE LoadAndMountForegroundTitle(TitleId titleId)
 	{
         cemuLog_log(LogType::Force, "Mounting title {:016x}", (uint64)titleId);
 		sGameInfo_ForegroundTitle = CafeTitleList::GetGameInfo(titleId);
 		if (!sGameInfo_ForegroundTitle.IsValid())
 		{
 			cemuLog_log(LogType::Force, "Mounting failed: Game meta information is either missing, inaccessible or not valid (missing or invalid .xml files in code and meta folder)");
-			return STATUS_CODE::UNABLE_TO_MOUNT;
+			return PREPARE_STATUS_CODE::UNABLE_TO_MOUNT;
 		}
 		// check base
 		TitleInfo& titleBase = sGameInfo_ForegroundTitle.GetBase();
 		if (!titleBase.IsValid())
-			return STATUS_CODE::UNABLE_TO_MOUNT;
+			return PREPARE_STATUS_CODE::UNABLE_TO_MOUNT;
 		if(!titleBase.ParseXmlInfo())
-			return STATUS_CODE::UNABLE_TO_MOUNT;
+			return PREPARE_STATUS_CODE::UNABLE_TO_MOUNT;
 		cemuLog_log(LogType::Force, "Base: {}", titleBase.GetPrintPath());
 		// mount base
 		if (!titleBase.Mount("/vol/content", "content", FSC_PRIORITY_BASE) || !titleBase.Mount(GetInternalVirtualCodeFolder(), "code", FSC_PRIORITY_BASE))
 		{
 			cemuLog_log(LogType::Force, "Mounting failed");
-			return STATUS_CODE::UNABLE_TO_MOUNT;
+			return PREPARE_STATUS_CODE::UNABLE_TO_MOUNT;
 		}
 		// check update
 		TitleInfo& titleUpdate = sGameInfo_ForegroundTitle.GetUpdate();
 		if (titleUpdate.IsValid())
 		{
 			if (!titleUpdate.ParseXmlInfo())
-				return STATUS_CODE::UNABLE_TO_MOUNT;
+				return PREPARE_STATUS_CODE::UNABLE_TO_MOUNT;
 			cemuLog_log(LogType::Force, "Update: {}", titleUpdate.GetPrintPath());
 			// mount update
 			if (!titleUpdate.Mount("/vol/content", "content", FSC_PRIORITY_PATCH) || !titleUpdate.Mount(GetInternalVirtualCodeFolder(), "code", FSC_PRIORITY_PATCH))
 			{
 				cemuLog_log(LogType::Force, "Mounting failed");
-				return STATUS_CODE::UNABLE_TO_MOUNT;
+				return PREPARE_STATUS_CODE::UNABLE_TO_MOUNT;
 			}
 		}
 		else
@@ -682,20 +691,20 @@ namespace CafeSystem
 			// todo - support for multi-title AOC
 			TitleInfo& titleAOC = aocList[0];
 			if (!titleAOC.ParseXmlInfo())
-				return STATUS_CODE::UNABLE_TO_MOUNT;
+				return PREPARE_STATUS_CODE::UNABLE_TO_MOUNT;
 			cemu_assert_debug(titleAOC.IsValid());
 			cemuLog_log(LogType::Force, "DLC: {}", titleAOC.GetPrintPath());
 			// mount AOC
 			if (!titleAOC.Mount(fmt::format("/vol/aoc{:016x}", titleAOC.GetAppTitleId()), "content", FSC_PRIORITY_PATCH))
 			{
 				cemuLog_log(LogType::Force, "Mounting failed");
-				return STATUS_CODE::UNABLE_TO_MOUNT;
+				return PREPARE_STATUS_CODE::UNABLE_TO_MOUNT;
 			}
 		}
 		else
 			cemuLog_log(LogType::Force, "DLC: Not present");
 		sForegroundTitleId = titleId;
-		return STATUS_CODE::SUCCESS;
+		return PREPARE_STATUS_CODE::SUCCESS;
 	}
 
     void UnmountForegroundTitle()
@@ -723,7 +732,7 @@ namespace CafeSystem
         }
     }
 
-	STATUS_CODE SetupExecutable()
+	PREPARE_STATUS_CODE SetupExecutable()
 	{
 		// set rpx path from cos.xml if available
 		_pathToBaseExecutable = _pathToExecutable;
@@ -755,7 +764,7 @@ namespace CafeSystem
 			}
 		}
 		LoadMainExecutable();
-		return STATUS_CODE::SUCCESS;
+		return PREPARE_STATUS_CODE::SUCCESS;
 	}
 
     void SetupMemorySpace()
@@ -769,7 +778,7 @@ namespace CafeSystem
         memory_unmapForCurrentTitle();
     }
 
-	STATUS_CODE PrepareForegroundTitle(TitleId titleId)
+	PREPARE_STATUS_CODE PrepareForegroundTitle(TitleId titleId)
 	{
 		CafeTitleList::WaitForMandatoryScan();
 		sLaunchModeIsStandalone = false;
@@ -780,21 +789,21 @@ namespace CafeSystem
         // mount mlc storage
         MountBaseDirectories();
         // mount title folders
-		STATUS_CODE r = LoadAndMountForegroundTitle(titleId);
-		if (r != STATUS_CODE::SUCCESS)
+		PREPARE_STATUS_CODE r = LoadAndMountForegroundTitle(titleId);
+		if (r != PREPARE_STATUS_CODE::SUCCESS)
 			return r;
 		gameProfile_load();
 		// setup memory space and PPC recompiler
         SetupMemorySpace();
         PPCRecompiler_init();
 		r = SetupExecutable(); // load RPX
-		if (r != STATUS_CODE::SUCCESS)
+		if (r != PREPARE_STATUS_CODE::SUCCESS)
 			return r;
 		InitVirtualMlcStorage();
-		return STATUS_CODE::SUCCESS;
+		return PREPARE_STATUS_CODE::SUCCESS;
 	}
 
-	STATUS_CODE PrepareForegroundTitleFromStandaloneRPX(const fs::path& path)
+	PREPARE_STATUS_CODE PrepareForegroundTitleFromStandaloneRPX(const fs::path& path)
 	{
 		sLaunchModeIsStandalone = true;
 		cemuLog_log(LogType::Force, "Launching executable in standalone mode due to incorrect layout or missing meta files");
@@ -812,7 +821,7 @@ namespace CafeSystem
 				if (!r)
 				{
 					cemuLog_log(LogType::Force, "Failed to mount {}", _pathToUtf8(contentPath));
-					return STATUS_CODE::UNABLE_TO_MOUNT;
+					return PREPARE_STATUS_CODE::UNABLE_TO_MOUNT;
 				}
 			}
 		}
@@ -824,7 +833,7 @@ namespace CafeSystem
 		// since a lot of systems (including save folder location) rely on a TitleId, we derive a placeholder id from the executable hash
 		auto execData = fsc_extractFile(_pathToExecutable.c_str());
 		if (!execData)
-			return STATUS_CODE::INVALID_RPX;
+			return PREPARE_STATUS_CODE::INVALID_RPX;
 		uint32 h = generateHashFromRawRPXData(execData->data(), execData->size());
 		sForegroundTitleId = 0xFFFFFFFF00000000ULL | (uint64)h;
 		cemuLog_log(LogType::Force, "Generated placeholder TitleId: {:016x}", sForegroundTitleId);
@@ -834,7 +843,7 @@ namespace CafeSystem
         // load executable
         SetupExecutable();
 		InitVirtualMlcStorage();
-		return STATUS_CODE::SUCCESS;
+		return PREPARE_STATUS_CODE::SUCCESS;
 	}
 
 	void _LaunchTitleThread()
@@ -1013,7 +1022,7 @@ namespace CafeSystem
 	{
 		// starting with Cemu 1.27.0 /vol/storage_mlc01/ is virtualized, meaning that it doesn't point to one singular host os folder anymore
 		// instead it now uses a more complex solution to source titles with various formats (folder, wud, wua) from the game paths and host mlc path
-		
+
 		// todo - mount /vol/storage_mlc01/ with base priority to the host mlc?
 
 		// since mounting titles is an expensive operation we have to avoid mounting all titles at once

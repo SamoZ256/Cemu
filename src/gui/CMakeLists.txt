@@ -4,8 +4,6 @@ add_library(CemuGui
   canvas/OpenGLCanvas.h
   canvas/VulkanCanvas.cpp
   canvas/VulkanCanvas.h
-  canvas/MetalCanvas.cpp
-  canvas/MetalCanvas.h
   CemuApp.cpp
   CemuApp.h
   CemuUpdateWindow.cpp
@@ -77,6 +75,8 @@ add_library(CemuGui
   input/InputAPIAddWindow.h
   input/InputSettings2.cpp
   input/InputSettings2.h
+  input/PairingDialog.cpp
+  input/PairingDialog.h
   input/panels/ClassicControllerInputPanel.cpp
   input/panels/ClassicControllerInputPanel.h
   input/panels/InputPanel.cpp
@@ -99,8 +99,6 @@ add_library(CemuGui
   MemorySearcherTool.h
   PadViewFrame.cpp
   PadViewFrame.h
-  PairingDialog.cpp
-  PairingDialog.h
   TitleManager.cpp
   TitleManager.h
   EmulatedUSBDevices/EmulatedUSBDeviceFrame.cpp
@@ -130,6 +128,13 @@ add_library(CemuGui
   wxgui.h
   wxHelper.h
 )
+
+if(ENABLE_METAL)
+    target_sources(CemuGui PRIVATE
+        canvas/MetalCanvas.cpp
+        canvas/MetalCanvas.h
+    )
+endif()
 
 set_property(TARGET CemuGui PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 

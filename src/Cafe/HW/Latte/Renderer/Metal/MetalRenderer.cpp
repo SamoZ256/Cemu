@@ -4,37 +4,86 @@
 #include "Cafe/HW/Latte/Renderer/Metal/LatteTextureViewMtl.h"
 #include "Cafe/HW/Latte/Renderer/Metal/RendererShaderMtl.h"
 #include "Cafe/HW/Latte/Renderer/Metal/CachedFBOMtl.h"
+#include "Cafe/HW/Latte/Renderer/Metal/MetalOutputShaderCache.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalPipelineCache.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalDepthStencilCache.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalSamplerCache.h"
 #include "Cafe/HW/Latte/Renderer/Metal/LatteTextureReadbackMtl.h"
-#include "Cafe/HW/Latte/Renderer/Metal/MetalHybridComputePipeline.h"
+#include "Cafe/HW/Latte/Renderer/Metal/MetalVoidVertexPipeline.h"
+#include "Cafe/HW/Latte/Renderer/Metal/MetalQuery.h"
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
-
 #include "Cafe/HW/Latte/Renderer/Metal/UtilityShaderSource.h"
 
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/LatteIndices.h"
 #include "Cemu/Logging/CemuDebugLogging.h"
-#include "HW/Latte/Core/LatteConst.h"
+#include "Cemu/Logging/CemuLogging.h"
+#include "Cafe/HW/Latte/Core/FetchShader.h"
+#include "Cafe/HW/Latte/Core/LatteConst.h"
+#include "Common/precompiled.h"
 #include "HW/Latte/Renderer/Metal/MetalCommon.h"
-#include "HW/Latte/Renderer/Metal/MetalLayerHandle.h"
-#include "HW/Latte/Renderer/Renderer.h"
+#include "Metal/MTLCaptureManager.hpp"
+#include "config/CemuConfig.h"
+#include "gui/guiWrapper.h"
 
 #define IMGUI_IMPL_METAL_CPP
 #include "imgui/imgui_extension.h"
 #include "imgui/imgui_impl_metal.h"
 
-#define COMMIT_TRESHOLD 256
+#define EVENT_VALUE_WRAP 4096
 
 extern bool hasValidFramebufferAttached;
 
 float supportBufferData[512 * 4];
 
+// Defined in the OpenGL renderer
+void LatteDraw_handleSpecialState8_clearAsDepth();
+
+std::vector<MetalRenderer::DeviceInfo> MetalRenderer::GetDevices()
+{
+    auto devices = MTL::CopyAllDevices();
+    std::vector<MetalRenderer::DeviceInfo> result;
+    result.reserve(devices->count());
+    for (uint32 i = 0; i < devices->count(); i++)
+    {
+        MTL::Device* device = static_cast<MTL::Device*>(devices->object(i));
+        result.emplace_back(std::string(device->name()->utf8String()), device->registryID());
+    }
+
+    return result;
+}
+
 MetalRenderer::MetalRenderer()
 {
-    m_device = MTL::CreateSystemDefaultDevice();
-    m_commandQueue = m_device->newCommandQueue();
+    // Pick a device
+    auto& config = GetConfig();
+    const bool hasDeviceSet = config.mtl_graphic_device_uuid != 0;
+
+    // If a device is set, try to find it
+    if (hasDeviceSet)
+    {
+        auto devices = MTL::CopyAllDevices();
+        for (uint32 i = 0; i < devices->count(); i++)
+        {
+            MTL::Device* device = static_cast<MTL::Device*>(devices->object(i));
+            if (device->registryID() == config.mtl_graphic_device_uuid)
+            {
+                m_device = device;
+                break;
+            }
+        }
+    }
+
+    if (!m_device)
+    {
+        if (hasDeviceSet)
+        {
+            cemuLog_log(LogType::Force, "The selected GPU ({}) could not be found. Using the system default device.", config.mtl_graphic_device_uuid);
+            config.mtl_graphic_device_uuid = 0;
+        }
+        // Use the system default device
+        m_device = MTL::CreateSystemDefaultDevice();
+    }
 
     // Feature support
     m_isAppleGPU = m_device->supportsFamily(MTL::GPUFamilyApple1);
@@ -42,6 +91,14 @@ MetalRenderer::MetalRenderer()
     m_supportsMetal3 = m_device->supportsFamily(MTL::GPUFamilyMetal3);
     m_recommendedMaxVRAMUsage = m_device->recommendedMaxWorkingSetSize();
     m_pixelFormatSupport = MetalPixelFormatSupport(m_device);
+
+    CheckForPixelFormatSupport(m_pixelFormatSupport);
+
+    // Command queue
+    m_commandQueue = m_device->newCommandQueue();
+
+    // Synchronization resources
+    m_event = m_device->newEvent();
 
     // Resources
     MTL::SamplerDescriptor* samplerDescriptor = MTL::SamplerDescriptor::alloc()->init();
@@ -62,6 +119,7 @@ MetalRenderer::MetalRenderer()
     MTL::TextureDescriptor* textureDescriptor = MTL::TextureDescriptor::alloc()->init();
     textureDescriptor->setTextureType(MTL::TextureType1D);
     textureDescriptor->setWidth(1);
+    textureDescriptor->setUsage(MTL::TextureUsageShaderRead);
     m_nullTexture1D = m_device->newTexture(textureDescriptor);
 #ifdef CEMU_DEBUG_ASSERT
     m_nullTexture1D->setLabel(GetLabel("Null texture 1D", m_nullTexture1D));
@@ -69,6 +127,7 @@ MetalRenderer::MetalRenderer()
 
     textureDescriptor->setTextureType(MTL::TextureType2D);
     textureDescriptor->setHeight(1);
+    textureDescriptor->setUsage(MTL::TextureUsageShaderRead | MTL::TextureUsageRenderTarget);
     m_nullTexture2D = m_device->newTexture(textureDescriptor);
 #ifdef CEMU_DEBUG_ASSERT
     m_nullTexture2D->setLabel(GetLabel("Null texture 2D", m_nullTexture2D));
@@ -76,25 +135,29 @@ MetalRenderer::MetalRenderer()
     textureDescriptor->release();
 
     m_memoryManager = new MetalMemoryManager(this);
+    m_outputShaderCache = new MetalOutputShaderCache(this);
     m_pipelineCache = new MetalPipelineCache(this);
     m_depthStencilCache = new MetalDepthStencilCache(this);
     m_samplerCache = new MetalSamplerCache(this);
 
-    // Texture readback
-    m_readbackBuffer = m_device->newBuffer(TEXTURE_READBACK_SIZE, MTL::ResourceStorageModeShared);
-#ifdef CEMU_DEBUG_ASSERT
-    m_readbackBuffer->setLabel(GetLabel("Texture readback buffer", m_readbackBuffer));
-#endif
+    // Lower the commit treshold when buffer cache needs reduced latency
+    if (m_memoryManager->NeedsReducedLatency())
+        m_defaultCommitTreshlod = 64;
+    else
+        m_defaultCommitTreshlod = 196;
 
-    // Transform feedback
-    // HACK: using just LatteStreamout_GetRingBufferSize will cause page faults
-    m_xfbRingBuffer = m_device->newBuffer(LatteStreamout_GetRingBufferSize() * 4, MTL::ResourceStorageModePrivate);
+    // Occlusion queries
+    m_occlusionQuery.m_resultBuffer = m_device->newBuffer(OCCLUSION_QUERY_POOL_SIZE * sizeof(uint64), MTL::ResourceStorageModeShared);
 #ifdef CEMU_DEBUG_ASSERT
-    m_xfbRingBuffer->setLabel(GetLabel("Transform feedback buffer", m_xfbRingBuffer));
+    m_occlusionQuery.m_resultBuffer->setLabel(GetLabel("Occlusion query result buffer", m_occlusionQuery.m_resultBuffer));
 #endif
+    m_occlusionQuery.m_resultsPtr = (uint64*)m_occlusionQuery.m_resultBuffer->contents();
 
-    // Initialize state
-    for (uint32 i = 0; i < METAL_SHADER_TYPE_TOTAL; i++)
+    // Reset vertex and uniform buffers
+   	for (uint32 i = 0; i < MAX_MTL_VERTEX_BUFFERS; i++)
+        m_state.m_vertexBufferOffsets[i] = INVALID_OFFSET;
+
+   	for (uint32 i = 0; i < METAL_SHADER_TYPE_TOTAL; i++)
     {
         for (uint32 j = 0; j < MAX_MTL_BUFFERS; j++)
             m_state.m_uniformBufferOffsets[i][j] = INVALID_OFFSET;
@@ -107,58 +170,27 @@ MetalRenderer::MetalRenderer()
 	MTL::Library* utilityLibrary = m_device->newLibrary(ToNSString(utilityShaderSource), nullptr, &error);
 	if (error)
     {
-        debug_printf("failed to create utility library (error: %s)\n", error->localizedDescription()->utf8String());
-        error->release();
-        throw;
-        return;
+        cemuLog_log(LogType::Force, "failed to create utility library (error: {})", error->localizedDescription()->utf8String());
     }
 
-    // Present pipeline
-    MTL::Function* fullscreenVertexFunction = utilityLibrary->newFunction(ToNSString("vertexFullscreen"));
-    MTL::Function* presentFragmentFunction = utilityLibrary->newFunction(ToNSString("fragmentPresent"));
+    // Pipelines
+    MTL::Function* vertexFullscreenFunction = utilityLibrary->newFunction(ToNSString("vertexFullscreen"));
+    MTL::Function* fragmentCopyDepthToColorFunction = utilityLibrary->newFunction(ToNSString("fragmentCopyDepthToColor"));
 
-    MTL::RenderPipelineDescriptor* renderPipelineDescriptor = MTL::RenderPipelineDescriptor::alloc()->init();
-    renderPipelineDescriptor->setVertexFunction(fullscreenVertexFunction);
-    renderPipelineDescriptor->setFragmentFunction(presentFragmentFunction);
-    fullscreenVertexFunction->release();
-    presentFragmentFunction->release();
+    m_copyDepthToColorDesc = MTL::RenderPipelineDescriptor::alloc()->init();
+    m_copyDepthToColorDesc->setVertexFunction(vertexFullscreenFunction);
+    m_copyDepthToColorDesc->setFragmentFunction(fragmentCopyDepthToColorFunction);
+    vertexFullscreenFunction->release();
+    fragmentCopyDepthToColorFunction->release();
 
-    error = nullptr;
-    renderPipelineDescriptor->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatBGRA8Unorm);
-#ifdef CEMU_DEBUG_ASSERT
-    renderPipelineDescriptor->setLabel(GetLabel("Present pipeline linear", renderPipelineDescriptor));
-#endif
-    m_presentPipelineLinear = m_device->newRenderPipelineState(renderPipelineDescriptor, &error);
-    if (error)
-    {
-        debug_printf("failed to create linear present pipeline (error: %s)\n", error->localizedDescription()->utf8String());
-        error->release();
-    }
-
-    error = nullptr;
-    renderPipelineDescriptor->colorAttachments()->object(0)->setPixelFormat(MTL::PixelFormatBGRA8Unorm_sRGB);
-#ifdef CEMU_DEBUG_ASSERT
-    renderPipelineDescriptor->setLabel(GetLabel("Present pipeline sRGB", renderPipelineDescriptor));
-#endif
-    m_presentPipelineSRGB = m_device->newRenderPipelineState(renderPipelineDescriptor, &error);
-    renderPipelineDescriptor->release();
-    if (error)
-    {
-        debug_printf("failed to create sRGB present pipeline (error: %s)\n", error->localizedDescription()->utf8String());
-        error->release();
-    }
-
-    // Copy texture pipelines
-    auto copyTextureToColorPipelineDescriptor = MTL::RenderPipelineDescriptor::alloc()->init();
-
-    // Hybrid pipelines
+    // Void vertex pipelines
     if (m_isAppleGPU)
-        m_copyBufferToBufferPipeline = new MetalHybridComputePipeline(this, utilityLibrary, "vertexCopyBufferToBuffer");
-    //m_copyTextureToTexturePipeline = new MetalHybridComputePipeline(this, utilityLibrary, "vertexCopyTextureToTexture");
-    m_restrideBufferPipeline = new MetalHybridComputePipeline(this, utilityLibrary, "vertexRestrideBuffer");
+        m_copyBufferToBufferPipeline = new MetalVoidVertexPipeline(this, utilityLibrary, "vertexCopyBufferToBuffer");
+
     utilityLibrary->release();
 
-    m_memoryManager->SetRestrideBufferPipeline(m_restrideBufferPipeline);
+    // HACK: for some reason, this variable ends up being initialized to some garbage data, even though its declared as bool m_captureFrame = false;
+    m_captureFrame = false;
 }
 
 MetalRenderer::~MetalRenderer()
@@ -166,11 +198,13 @@ MetalRenderer::~MetalRenderer()
     if (m_isAppleGPU)
         delete m_copyBufferToBufferPipeline;
     //delete m_copyTextureToTexturePipeline;
-    delete m_restrideBufferPipeline;
+    //delete m_restrideBufferPipeline;
 
-    m_presentPipelineLinear->release();
-    m_presentPipelineSRGB->release();
+    m_copyDepthToColorDesc->release();
+    for (const auto [pixelFormat, pipeline] : m_copyDepthToColorPipelines)
+        pipeline->release();
 
+    delete m_outputShaderCache;
     delete m_pipelineCache;
     delete m_depthStencilCache;
     delete m_samplerCache;
@@ -182,7 +216,15 @@ MetalRenderer::~MetalRenderer()
     m_nearestSampler->release();
     m_linearSampler->release();
 
-    m_readbackBuffer->release();
+    if (m_readbackBuffer)
+        m_readbackBuffer->release();
+
+    if (m_xfbRingBuffer)
+        m_xfbRingBuffer->release();
+
+    m_occlusionQuery.m_resultBuffer->release();
+
+    m_event->release();
 
     m_commandQueue->release();
     m_device->release();
@@ -210,14 +252,16 @@ void MetalRenderer::ResizeLayer(const Vector2i& size, bool mainWindow)
 void MetalRenderer::Initialize()
 {
     Renderer::Initialize();
+    RendererShaderMtl::Initialize();
 }
 
 void MetalRenderer::Shutdown()
 {
     // TODO: should shutdown both layers
     ImGui_ImplMetal_Shutdown();
-    Renderer::Shutdown();
     CommitCommandBuffer();
+    Renderer::Shutdown();
+    RendererShaderMtl::Shutdown();
 }
 
 bool MetalRenderer::IsPadWindowActive()
@@ -227,7 +271,8 @@ bool MetalRenderer::IsPadWindowActive()
 
 bool MetalRenderer::GetVRAMInfo(int& usageInMB, int& totalInMB) const
 {
-    usageInMB = m_device->currentAllocatedSize() / 1024 / 1024;
+    // Subtract host memory from total VRAM, since it's shared with the CPU
+    usageInMB = (m_device->currentAllocatedSize() - m_memoryManager->GetHostAllocationSize()) / 1024 / 1024;
     totalInMB = m_recommendedMaxVRAMUsage / 1024 / 1024;
 
     return true;
@@ -255,12 +300,8 @@ void MetalRenderer::SwapBuffers(bool swapTV, bool swapDRC)
     if (swapDRC)
         SwapBuffer(false);
 
-    // Release all the command buffers
+    // Reset the command buffers (they are released by TemporaryBufferAllocator)
     CommitCommandBuffer();
-    // TODO: release
-    //for (uint32 i = 0; i < m_commandBuffers.size(); i++)
-    //    m_commandBuffers[i].m_commandBuffer->release();
-    m_commandBuffers.clear();
 
     // Release frame persistent buffers
     m_memoryManager->GetFramePersistentBufferAllocator().ResetAllocations();
@@ -270,9 +311,94 @@ void MetalRenderer::SwapBuffers(bool swapTV, bool swapDRC)
 
     // Debug
     m_performanceMonitor.ResetPerFrameData();
+
+    // GPU capture
+    if (m_capturing)
+    {
+        EndCapture();
+    }
+    else if (m_captureFrame)
+    {
+        StartCapture();
+        m_captureFrame = false;
+    }
 }
 
-// TODO: use `shader` for drawing
+void MetalRenderer::HandleScreenshotRequest(LatteTextureView* texView, bool padView) {
+    const bool hasScreenshotRequest = gui_hasScreenshotRequest();
+	if (!hasScreenshotRequest && m_screenshot_state == ScreenshotState::None)
+		return;
+
+	if (m_mainLayer.GetDrawable())
+	{
+		// we already took a pad view screenshow and want a main window screenshot
+		if (m_screenshot_state == ScreenshotState::Main && padView)
+			return;
+
+		if (m_screenshot_state == ScreenshotState::Pad && !padView)
+			return;
+
+		// remember which screenshot is left to take
+		if (m_screenshot_state == ScreenshotState::None)
+			m_screenshot_state = padView ? ScreenshotState::Main : ScreenshotState::Pad;
+		else
+			m_screenshot_state = ScreenshotState::None;
+	}
+	else
+		m_screenshot_state = ScreenshotState::None;
+
+	auto texMtl = static_cast<LatteTextureMtl*>(texView->baseTexture);
+
+	int width, height;
+	texMtl->GetEffectiveSize(width, height, 0);
+
+	uint32 bytesPerRow = GetMtlTextureBytesPerRow(texMtl->format, texMtl->IsDepth(), width);
+	uint32 size = GetMtlTextureBytesPerImage(texMtl->format, texMtl->IsDepth(), height, bytesPerRow);
+
+	// TODO: get a buffer from the memory manager
+	MTL::Buffer* buffer = m_device->newBuffer(size, MTL::ResourceStorageModeShared);
+
+	auto blitCommandEncoder = GetBlitCommandEncoder();
+	blitCommandEncoder->copyFromTexture(texMtl->GetTexture(), 0, 0, MTL::Origin(0, 0, 0), MTL::Size(width, height, 1), buffer, 0, bytesPerRow, 0);
+
+	uint8* bufferPtr = (uint8*)buffer->contents();
+
+	bool formatValid = true;
+	std::vector<uint8> rgb_data;
+	rgb_data.reserve(3 * width * height);
+
+	auto pixelFormat = texMtl->GetTexture()->pixelFormat();
+	// TODO: implement more formats
+	switch (pixelFormat)
+	{
+	case MTL::PixelFormatRGBA8Unorm:
+		for (auto ptr = bufferPtr; ptr < bufferPtr + size; ptr += 4)
+		{
+			rgb_data.emplace_back(*ptr);
+			rgb_data.emplace_back(*(ptr + 1));
+			rgb_data.emplace_back(*(ptr + 2));
+		}
+		break;
+	case MTL::PixelFormatRGBA8Unorm_sRGB:
+		for (auto ptr = bufferPtr; ptr < bufferPtr + size; ptr += 4)
+		{
+			rgb_data.emplace_back(SRGBComponentToRGB(*ptr));
+			rgb_data.emplace_back(SRGBComponentToRGB(*(ptr + 1)));
+			rgb_data.emplace_back(SRGBComponentToRGB(*(ptr + 2)));
+		}
+		break;
+	default:
+		cemuLog_log(LogType::Force, "Unsupported screenshot texture pixel format {}", pixelFormat);
+		formatValid = false;
+		break;
+	}
+
+	buffer->release();
+
+	if (formatValid)
+		SaveScreenshot(rgb_data, width, height, !padView);
+}
+
 void MetalRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutputShader* shader, bool useLinearTexFilter,
 								sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight,
 								bool padView, bool clearBackground)
@@ -294,10 +420,37 @@ void MetalRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutput
     auto renderCommandEncoder = GetTemporaryRenderCommandEncoder(renderPassDescriptor);
     renderPassDescriptor->release();
 
+    // Get a render pipeline
+
+    // Find out which shader we are using
+    uint8 shaderIndex = 255;
+    if (shader == RendererOutputShader::s_copy_shader) shaderIndex = 0;
+    else if (shader == RendererOutputShader::s_bicubic_shader) shaderIndex = 1;
+    else if (shader == RendererOutputShader::s_hermit_shader) shaderIndex = 2;
+    else if (shader == RendererOutputShader::s_copy_shader_ud) shaderIndex = 3;
+    else if (shader == RendererOutputShader::s_bicubic_shader_ud) shaderIndex = 4;
+    else if (shader == RendererOutputShader::s_hermit_shader_ud) shaderIndex = 5;
+
+    uint8 shaderType = shaderIndex % 3;
+
+    // Get the render pipeline state
+    auto renderPipelineState = m_outputShaderCache->GetPipeline(shader, shaderIndex, m_state.m_usesSRGB);
+
     // Draw to Metal layer
-    renderCommandEncoder->setRenderPipelineState(m_state.m_usesSRGB ? m_presentPipelineSRGB : m_presentPipelineLinear);
+    renderCommandEncoder->setRenderPipelineState(renderPipelineState);
     renderCommandEncoder->setFragmentTexture(presentTexture, 0);
     renderCommandEncoder->setFragmentSamplerState((useLinearTexFilter ? m_linearSampler : m_nearestSampler), 0);
+
+    // Set uniforms
+    float outputSize[2] = {(float)imageWidth, (float)imageHeight};
+    switch (shaderType)
+    {
+    case 2:
+        renderCommandEncoder->setFragmentBytes(outputSize, sizeof(outputSize), 0);
+        break;
+    default:
+        break;
+    }
 
     renderCommandEncoder->setViewport(MTL::Viewport{(double)imageX, (double)imageY, (double)imageWidth, (double)imageHeight, 0.0, 1.0});
     renderCommandEncoder->setScissorRect(MTL::ScissorRect{(uint32)imageX, (uint32)imageY, (uint32)imageWidth, (uint32)imageHeight});
@@ -316,15 +469,9 @@ void MetalRenderer::Flush(bool waitIdle)
 {
     if (m_recordedDrawcalls > 0 || waitIdle)
         CommitCommandBuffer();
-    if (waitIdle)
-    {
-        for (auto commandBuffer : m_commandBuffers)
-        {
-            cemu_assert_debug(commandBuffer.m_commited);
 
-            WaitForCommandBufferCompletion(commandBuffer.m_commandBuffer);
-        }
-    }
+    if (waitIdle && m_executingCommandBuffers.size() != 0)
+        m_executingCommandBuffers.back()->waitUntilCompleted();
 }
 
 void MetalRenderer::NotifyLatteCommandProcessorIdle()
@@ -375,7 +522,7 @@ void MetalRenderer::ImguiEnd()
 
     if (m_encoderType != MetalEncoderType::Render)
     {
-        debug_printf("no render command encoder, cannot draw ImGui\n");
+        cemuLog_logOnce(LogType::Force, "no render command encoder, cannot draw ImGui");
         return;
     }
 
@@ -439,25 +586,27 @@ void MetalRenderer::DeleteFontTextures()
 void MetalRenderer::AppendOverlayDebugInfo()
 {
     ImGui::Text("--- GPU info ---");
-    ImGui::Text("Is Apple GPU            %s", (m_isAppleGPU ? "yes" : "no"));
-    ImGui::Text("Has unified memory      %s", (m_hasUnifiedMemory ? "yes" : "no"));
-    ImGui::Text("Supports Metal3         %s", (m_supportsMetal3 ? "yes" : "no"));
+    ImGui::Text("GPU                       %s", m_device->name()->utf8String());
+    ImGui::Text("Is Apple GPU              %s", (m_isAppleGPU ? "yes" : "no"));
+    ImGui::Text("Has unified memory        %s", (m_hasUnifiedMemory ? "yes" : "no"));
+    ImGui::Text("Supports Metal3           %s", (m_supportsMetal3 ? "yes" : "no"));
 
     ImGui::Text("--- Metal info ---");
-    ImGui::Text("Render pipeline states  %zu", m_pipelineCache->GetPipelineCacheSize());
-    ImGui::Text("Buffer allocator memory %zuMB", m_performanceMonitor.m_bufferAllocatorMemory / 1024 / 1024);
+    ImGui::Text("Render pipeline states    %zu", m_pipelineCache->GetPipelineCacheSize());
+    ImGui::Text("Buffer allocator memory   %zuMB", m_performanceMonitor.m_bufferAllocatorMemory / 1024 / 1024);
 
     ImGui::Text("--- Metal info (per frame) ---");
-    ImGui::Text("Command buffers         %zu", m_commandBuffers.size());
-    ImGui::Text("Render passes           %u", m_performanceMonitor.m_renderPasses);
-    ImGui::Text("Clears                  %u", m_performanceMonitor.m_clears);
-    ImGui::Text("Vertex buffer restrides %u", m_performanceMonitor.m_vertexBufferRestrides);
-    ImGui::Text("Triangle fans           %u", m_performanceMonitor.m_triangleFans);
+    ImGui::Text("Command buffers           %u", m_performanceMonitor.m_commandBuffers);
+    ImGui::Text("Render passes             %u", m_performanceMonitor.m_renderPasses);
+    ImGui::Text("Clears                    %u", m_performanceMonitor.m_clears);
+    ImGui::Text("Manual vertex fetch draws %u (mesh draws: %u)", m_performanceMonitor.m_manualVertexFetchDraws, m_performanceMonitor.m_meshDraws);
+    ImGui::Text("Triangle fans             %u", m_performanceMonitor.m_triangleFans);
 }
 
-// TODO: halfZ
 void MetalRenderer::renderTarget_setViewport(float x, float y, float width, float height, float nearZ, float farZ, bool halfZ)
 {
+    // halfZ is handled in the shader
+
     m_state.m_viewport = MTL::Viewport{x, y, width, height, nearZ, farZ};
 }
 
@@ -468,33 +617,33 @@ void MetalRenderer::renderTarget_setScissor(sint32 scissorX, sint32 scissorY, si
 
 LatteCachedFBO* MetalRenderer::rendertarget_createCachedFBO(uint64 key)
 {
-	return new CachedFBOMtl(key);
+	return new CachedFBOMtl(this, key);
 }
 
 void MetalRenderer::rendertarget_deleteCachedFBO(LatteCachedFBO* cfbo)
 {
-	if (cfbo == (LatteCachedFBO*)m_state.m_activeFBO)
-	m_state.m_activeFBO = nullptr;
+	if (cfbo == (LatteCachedFBO*)m_state.m_activeFBO.m_fbo)
+	    m_state.m_activeFBO = {nullptr};
 }
 
 void MetalRenderer::rendertarget_bindFramebufferObject(LatteCachedFBO* cfbo)
 {
-	m_state.m_activeFBO = (CachedFBOMtl*)cfbo;
+	m_state.m_activeFBO = {(CachedFBOMtl*)cfbo, MetalAttachmentsInfo((CachedFBOMtl*)cfbo)};
 }
 
 void* MetalRenderer::texture_acquireTextureUploadBuffer(uint32 size)
 {
-    return m_memoryManager->GetTextureUploadBuffer(size);
+    return m_memoryManager->AcquireTextureUploadBuffer(size);
 }
 
 void MetalRenderer::texture_releaseTextureUploadBuffer(uint8* mem)
 {
-    // TODO: should the texture buffer get released?
+    m_memoryManager->ReleaseTextureUploadBuffer(mem);
 }
 
 TextureDecoder* MetalRenderer::texture_chooseDecodedFormat(Latte::E_GX2SURFFMT format, bool isDepth, Latte::E_DIM dim, uint32 width, uint32 height)
 {
-    return GetMtlTextureDecoder(format, isDepth);
+    return GetMtlPixelFormatInfo(format, isDepth).textureDecoder;
 }
 
 void MetalRenderer::texture_clearSlice(LatteTexture* hostTexture, sint32 sliceIndex, sint32 mipIndex)
@@ -541,6 +690,7 @@ void MetalRenderer::texture_loadSlice(LatteTexture* hostTexture, sint32 width, s
     memcpy(allocation.data, pixelData, compressedImageSize);
     //buffer->didModifyRange(NS::Range(allocation.offset, allocation.size));
 
+    // TODO: specify blit options when copying to a depth stencil texture?
     // Copy the data from the temporary buffer to the texture
     blitCommandEncoder->copyFromBuffer(buffer, allocation.offset, bytesPerRow, 0, MTL::Size(width, height, 1), textureMtl->GetTexture(), sliceIndex, mipIndex, MTL::Origin(0, 0, offsetZ));
     //}
@@ -548,6 +698,12 @@ void MetalRenderer::texture_loadSlice(LatteTexture* hostTexture, sint32 width, s
 
 void MetalRenderer::texture_clearColorSlice(LatteTexture* hostTexture, sint32 sliceIndex, sint32 mipIndex, float r, float g, float b, float a)
 {
+    if (!FormatIsRenderable(hostTexture->format))
+    {
+        cemuLog_logOnce(LogType::Force, "cannot clear color texture with format {}, because it's not renderable", hostTexture->format);
+        return;
+    }
+
     auto mtlTexture = static_cast<LatteTextureMtl*>(hostTexture)->GetTexture();
 
     ClearColorTextureInternal(mtlTexture, sliceIndex, mipIndex, r, g, b, a);
@@ -555,6 +711,13 @@ void MetalRenderer::texture_clearColorSlice(LatteTexture* hostTexture, sint32 sl
 
 void MetalRenderer::texture_clearDepthSlice(LatteTexture* hostTexture, uint32 sliceIndex, sint32 mipIndex, bool clearDepth, bool clearStencil, float depthValue, uint32 stencilValue)
 {
+    clearStencil = (clearStencil && GetMtlPixelFormatInfo(hostTexture->format, true).hasStencil);
+    if (!clearDepth && !clearStencil)
+    {
+        cemuLog_logOnce(LogType::Force, "skipping depth/stencil clear");
+        return;
+    }
+
     auto mtlTexture = static_cast<LatteTextureMtl*>(hostTexture)->GetTexture();
 
     MTL::RenderPassDescriptor* renderPassDescriptor = MTL::RenderPassDescriptor::alloc()->init();
@@ -568,7 +731,7 @@ void MetalRenderer::texture_clearDepthSlice(LatteTexture* hostTexture, uint32 sl
         depthAttachment->setSlice(sliceIndex);
         depthAttachment->setLevel(mipIndex);
     }
-    if (clearStencil && GetMtlPixelFormatInfo(hostTexture->format, true).hasStencil)
+    if (clearStencil)
     {
         auto stencilAttachment = renderPassDescriptor->stencilAttachment();
         stencilAttachment->setTexture(mtlTexture);
@@ -697,75 +860,7 @@ void MetalRenderer::surfaceCopy_copySurfaceWithFormatConversion(LatteTexture* so
 	//sint32 sourceEffectiveWidth, sourceEffectiveHeight;
 	//sourceTexture->GetEffectiveSize(sourceEffectiveWidth, sourceEffectiveHeight, srcMip);
 
-    texture_copyImageSubData(sourceTexture, srcMip, 0, 0, srcSlice, destinationTexture, dstMip, 0, 0, dstSlice, effectiveCopyWidth, effectiveCopyHeight, 0);
-
-    /*
-	sint32 texSrcMip = srcMip;
-	sint32 texSrcSlice = srcSlice;
-	sint32 texDstMip = dstMip;
-	sint32 texDstSlice = dstSlice;
-
-	// Create texture views
-	LatteTextureViewMtl* srcTextureMtl = static_cast<LatteTextureViewMtl*>(sourceTexture->GetOrCreateView(srcMip, 1, srcSlice, 1));
-	LatteTextureViewMtl* dstTextureMtl = static_cast<LatteTextureViewMtl*>(destinationTexture->GetOrCreateView(dstMip, 1, dstSlice, 1));
-
-	// check if texture rescale ratios match
-	// todo - if not, we have to use drawcall based copying
-	if (!LatteTexture_doesEffectiveRescaleRatioMatch(sourceTexture, texSrcMip, destinationTexture, texDstMip))
-	{
-		cemuLog_logDebug(LogType::Force, "surfaceCopy_copySurfaceWithFormatConversion(): Mismatching dimensions");
-		return;
-	}
-
-	// check if bpp size matches
-	if (sourceTexture->GetBPP() != destinationTexture->GetBPP())
-	{
-		cemuLog_logDebug(LogType::Force, "surfaceCopy_copySurfaceWithFormatConversion(): Mismatching BPP");
-		return;
-	}
-
-	if (m_encoderType == MetalEncoderType::Render)
-	{
-	    auto renderCommandEncoder = static_cast<MTL::RenderCommandEncoder*>(m_commandEncoder);
-
-		renderCommandEncoder->setRenderPipelineState(m_copyTextureToTexturePipeline->GetRenderPipelineState());
-		m_state.m_encoderState.m_renderPipelineState = m_copyTextureToTexturePipeline->GetRenderPipelineState();
-
-		SetTexture(renderCommandEncoder, METAL_SHADER_TYPE_VERTEX, srcTextureMtl->GetRGBAView(), GET_HELPER_TEXTURE_BINDING(0));
-		SetTexture(renderCommandEncoder, METAL_SHADER_TYPE_VERTEX, dstTextureMtl->GetRGBAView(), GET_HELPER_TEXTURE_BINDING(1));
-		renderCommandEncoder->setVertexBytes(&effectiveCopyWidth, sizeof(effectiveCopyWidth), GET_HELPER_BUFFER_BINDING(0));
-		m_state.m_encoderState.m_buffers[METAL_SHADER_TYPE_VERTEX][GET_HELPER_BUFFER_BINDING(0)] = {nullptr};
-
-		renderCommandEncoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
-	}
-	else
-	{
-	    bool copyingToWholeRegion = ((effectiveCopyWidth == dstTextureMtl->GetMipWidth(dstMip) && effectiveCopyHeight == dstTextureMtl->GetMipHeight(dstMip)));
-
-	    auto renderPassDescriptor = MTL::RenderPassDescriptor::alloc()->init();
-		auto colorAttachment = renderPassDescriptor->colorAttachments()->object(0);
-		colorAttachment->setTexture(dstTextureMtl->GetTexture());
-		// We don't care about previous contents if we are about to overwrite the whole region
-		colorAttachment->setLoadAction(copyingToWholeRegion ? MTL::LoadActionDontCare : MTL::LoadActionLoad);
-		colorAttachment->setStoreAction(MTL::StoreActionStore);
-		colorAttachment->setSlice(dstSlice);
-		colorAttachment->setLevel(dstMip);
-
-		auto renderCommandEncoder = GetTemporaryRenderCommandEncoder(renderPassDescriptor);
-
-		auto pipeline = (srcTextureMtl->IsDepth() ? m_copyTextureToColorPipeline : m_copyTextureToDepthPipeline);
-		renderCommandEncoder->setRenderPipelineState(pipeline);
-
-		renderCommandEncoder->setFragmentTexture(srcTextureMtl->GetTexture(), GET_HELPER_TEXTURE_BINDING(0));
-		renderCommandEncoder->setFragmentBytes(&effectiveCopyWidth, offsetof(effectiveCopyWidth), GET_HELPER_BUFFER_BINDING(0));
-
-		renderCommandEncoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
-
-		EndEncoding();
-
-		debug_printf("surface copy with no render command encoder, skipping copy\n");
-	}
-	*/
+    texture_copyImageSubData(sourceTexture, srcMip, 0, 0, srcSlice, destinationTexture, dstMip, 0, 0, dstSlice, effectiveCopyWidth, effectiveCopyHeight, 1);
 }
 
 void MetalRenderer::bufferCache_init(const sint32 bufferSize)
@@ -785,30 +880,24 @@ void MetalRenderer::bufferCache_copy(uint32 srcOffset, uint32 dstOffset, uint32 
 
 void MetalRenderer::bufferCache_copyStreamoutToMainBuffer(uint32 srcOffset, uint32 dstOffset, uint32 size)
 {
-    CopyBufferToBuffer(m_xfbRingBuffer, srcOffset, m_memoryManager->GetBufferCache(), dstOffset, size, MTL::RenderStageVertex, ALL_MTL_RENDER_STAGES);
+    if (m_memoryManager->UseHostMemoryForCache())
+        dstOffset -= m_memoryManager->GetImportedMemBaseAddress();
+
+    CopyBufferToBuffer(GetXfbRingBuffer(), srcOffset, m_memoryManager->GetBufferCache(), dstOffset, size, MTL::RenderStageVertex | MTL::RenderStageMesh, ALL_MTL_RENDER_STAGES);
 }
 
 void MetalRenderer::buffer_bindVertexBuffer(uint32 bufferIndex, uint32 offset, uint32 size)
 {
+    cemu_assert_debug(!m_memoryManager->UseHostMemoryForCache());
     cemu_assert_debug(bufferIndex < LATTE_MAX_VERTEX_BUFFERS);
-    auto& buffer = m_state.m_vertexBuffers[bufferIndex];
-	if (buffer.offset == offset && buffer.size == size)
-		return;
 
-	if (buffer.offset != INVALID_OFFSET)
-	{
-	    m_memoryManager->UntrackVertexBuffer(bufferIndex);
-	}
-
-	buffer.offset = offset;
-	buffer.size = size;
-	buffer.restrideInfo = {};
-
-	m_memoryManager->TrackVertexBuffer(bufferIndex, offset, size, &buffer.restrideInfo);
+    m_state.m_vertexBufferOffsets[bufferIndex] = offset;
 }
 
 void MetalRenderer::buffer_bindUniformBuffer(LatteConst::ShaderType shaderType, uint32 bufferIndex, uint32 offset, uint32 size)
 {
+    cemu_assert_debug(!m_memoryManager->UseHostMemoryForCache());
+
     m_state.m_uniformBufferOffsets[GetMtlGeneralShaderType(shaderType)][bufferIndex] = offset;
 }
 
@@ -843,7 +932,7 @@ void MetalRenderer::draw_beginSequence()
 	LatteSHRC_UpdateActiveShaders();
 	if (LatteGPUState.activeShaderHasError)
 	{
-		debug_printf("Skipping drawcalls due to shader error\n");
+		cemuLog_logOnce(LogType::Force, "Skipping drawcalls due to shader error\n");
 		m_state.m_skipDrawSequence = true;
 		cemu_assert_debug(false);
 		return;
@@ -856,15 +945,14 @@ void MetalRenderer::draw_beginSequence()
 		LatteGPUState.repeatTextureInitialization = false;
 		if (!LatteMRT::UpdateCurrentFBO())
 		{
-			debug_printf("Rendertarget invalid\n");
+			cemuLog_logOnce(LogType::Force, "Rendertarget invalid\n");
 			m_state.m_skipDrawSequence = true;
 			return; // no render target
 		}
 
-		// TODO: not checking for !streamoutEnable fixes Super Smash Bros. for Wii U, investigate why
 		if (!hasValidFramebufferAttached && !streamoutEnable)
 		{
-			debug_printf("Drawcall with no color buffer or depth buffer attached\n");
+			cemuLog_logOnce(LogType::Force, "Drawcall with no color buffer or depth buffer attached\n");
 			m_state.m_skipDrawSequence = true;
 			return; // no render target
 		}
@@ -900,30 +988,53 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 		return;
 	}
 
+	// fast clear color as depth
+	if (LatteGPUState.contextNew.GetSpecialStateValues()[8] != 0)
+	{
+		LatteDraw_handleSpecialState8_clearAsDepth();
+		LatteGPUState.drawCallCounter++;
+		return;
+	}
+	else if (LatteGPUState.contextNew.GetSpecialStateValues()[5] != 0)
+	{
+		draw_handleSpecialState5();
+		LatteGPUState.drawCallCounter++;
+		return;
+	}
+
 	auto& encoderState = m_state.m_encoderState;
 
     // Shaders
     LatteDecompilerShader* vertexShader = LatteSHRC_GetActiveVertexShader();
     LatteDecompilerShader* geometryShader = LatteSHRC_GetActiveGeometryShader();
     LatteDecompilerShader* pixelShader = LatteSHRC_GetActivePixelShader();
-    // TODO: is this even needed? Also, should go to draw_beginSequence
-    if (!vertexShader || !static_cast<RendererShaderMtl*>(vertexShader->shader)->GetFunction())
-    {
-        printf("no vertex function, skipping draw\n");
-        return;
-    }
     const auto fetchShader = LatteSHRC_GetActiveFetchShader();
 
-	// Check if we need to end the render pass
-	// Fragment shader is most likely to require a render pass flush, so check for it first
-	bool endRenderPass = CheckIfRenderPassNeedsFlush(pixelShader);
-	if (!endRenderPass)
-	    endRenderPass = CheckIfRenderPassNeedsFlush(vertexShader);
-	if (!endRenderPass && geometryShader)
-	    endRenderPass = CheckIfRenderPassNeedsFlush(geometryShader);
+    bool neverSkipAccurateBarrier = false;
 
-	if (endRenderPass)
-	    EndEncoding();
+    // "Accurate barriers" is usually enabled globally but since the CPU cost is substantial we allow users to disable it (debug -> 'Accurate barriers' option)
+	// We always force accurate barriers for known problematic shaders
+	if (pixelShader)
+	{
+		if (pixelShader->baseHash == 0x6f6f6e7b9aae57af && pixelShader->auxHash == 0x00078787f9249249) // BotW lava
+			neverSkipAccurateBarrier = true;
+		if (pixelShader->baseHash == 0x4c0bd596e3aef4a6 && pixelShader->auxHash == 0x003c3c3fc9269249) // BotW foam layer for water on the bottom of waterfalls
+			neverSkipAccurateBarrier = true;
+	}
+
+	// Check if we need to end the render pass
+	if (!m_state.m_isFirstDrawInRenderPass && (GetConfig().vk_accurate_barriers || neverSkipAccurateBarrier))
+	{
+    	// Fragment shader is most likely to require a render pass flush, so check for it first
+    	bool endRenderPass = CheckIfRenderPassNeedsFlush(pixelShader);
+    	if (!endRenderPass)
+    	    endRenderPass = CheckIfRenderPassNeedsFlush(vertexShader);
+    	if (!endRenderPass && geometryShader)
+    	    endRenderPass = CheckIfRenderPassNeedsFlush(geometryShader);
+
+    	if (endRenderPass)
+    	    EndEncoding();
+	}
 
     // Primitive type
     const LattePrimitiveMode primitiveMode = static_cast<LattePrimitiveMode>(LatteGPUState.contextRegister[mmVGT_PRIMITIVE_TYPE]);
@@ -931,6 +1042,7 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
     bool isPrimitiveRect = (primitiveMode == Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::RECTS);
 
     bool usesGeometryShader = (geometryShader != nullptr || isPrimitiveRect);
+    bool fetchVertexManually = (usesGeometryShader || fetchShader->mtlFetchVertexManually);
 
 	// Index buffer
 	Renderer::INDEX_TYPE hostIndexType;
@@ -941,19 +1053,45 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 	uint32 indexBufferIndex = 0;
 	LatteIndices_decode(memory_getPointerFromVirtualOffset(indexDataMPTR), indexType, count, primitiveMode, indexMin, indexMax, hostIndexType, hostIndexCount, indexBufferOffset, indexBufferIndex);
 
-	// synchronize vertex and uniform cache and update buffer bindings
-	// We need to call this before getting the render command encoder, since it can cause buffer copies
-	LatteBufferCache_Sync(indexMin + baseVertex, indexMax + baseVertex, baseInstance, instanceCount);
+	// Buffer cache
+	if (m_memoryManager->UseHostMemoryForCache())
+	{
+		// direct memory access (Wii U memory space imported as a buffer), update buffer bindings
+		draw_updateVertexBuffersDirectAccess();
+		if (vertexShader)
+			draw_updateUniformBuffersDirectAccess(vertexShader, mmSQ_VTX_UNIFORM_BLOCK_START);
+		if (geometryShader)
+			draw_updateUniformBuffersDirectAccess(geometryShader, mmSQ_GS_UNIFORM_BLOCK_START);
+		if (pixelShader)
+			draw_updateUniformBuffersDirectAccess(pixelShader, mmSQ_PS_UNIFORM_BLOCK_START);
+	}
+	else
+	{
+    	// synchronize vertex and uniform cache and update buffer bindings
+    	// We need to call this before getting the render command encoder, since it can cause buffer copies
+    	LatteBufferCache_Sync(indexMin + baseVertex, indexMax + baseVertex, baseInstance, instanceCount);
+	}
 
 	// Render pass
 	auto renderCommandEncoder = GetRenderCommandEncoder();
+
+    // Render pipeline state
+    PipelineObject* pipelineObj = m_pipelineCache->GetRenderPipelineState(fetchShader, vertexShader, geometryShader, pixelShader, m_state.m_lastUsedFBO.m_attachmentsInfo, m_state.m_activeFBO.m_attachmentsInfo, m_state.m_activeFBO.m_fbo->m_size, count, LatteGPUState.contextNew);
+    if (!pipelineObj->m_pipeline)
+        return;
+
+    if (pipelineObj->m_pipeline != encoderState.m_renderPipelineState)
+   	{
+        renderCommandEncoder->setRenderPipelineState(pipelineObj->m_pipeline);
+  		encoderState.m_renderPipelineState = pipelineObj->m_pipeline;
+   	}
 
 	// Depth stencil state
 
 	// Disable depth write when there is no depth attachment
 	auto& depthControl = LatteGPUState.contextNew.DB_DEPTH_CONTROL;
 	bool depthWriteEnable = depthControl.get_Z_WRITE_ENABLE();
-	if (!m_state.m_activeFBO->depthBuffer.texture)
+	if (!m_state.m_activeFBO.m_fbo->depthBuffer.texture)
 	    depthControl.set_Z_WRITE_ENABLE(false);
 
 	MTL::DepthStencilState* depthStencilState = m_depthStencilCache->GetDepthStencilState(LatteGPUState.contextNew);
@@ -988,10 +1126,18 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 	}
 
 	// Blend color
-	float* blendColorConstant = (float*)LatteGPUState.contextRegister + Latte::REGADDR::CB_BLEND_RED;
+	uint32* blendColorConstantU32 = LatteGPUState.contextRegister + Latte::REGADDR::CB_BLEND_RED;
 
-	// TODO: only set when changed
-	renderCommandEncoder->setBlendColor(blendColorConstant[0], blendColorConstant[1], blendColorConstant[2], blendColorConstant[3]);
+	if (blendColorConstantU32[0] != encoderState.m_blendColor[0] || blendColorConstantU32[1] != encoderState.m_blendColor[1] || blendColorConstantU32[2] != encoderState.m_blendColor[2] || blendColorConstantU32[3] != encoderState.m_blendColor[3])
+	{
+    	float* blendColorConstant = (float*)LatteGPUState.contextRegister + Latte::REGADDR::CB_BLEND_RED;
+    	renderCommandEncoder->setBlendColor(blendColorConstant[0], blendColorConstant[1], blendColorConstant[2], blendColorConstant[3]);
+
+        encoderState.m_blendColor[0] = blendColorConstantU32[0];
+        encoderState.m_blendColor[1] = blendColorConstantU32[1];
+        encoderState.m_blendColor[2] = blendColorConstantU32[2];
+        encoderState.m_blendColor[3] = blendColorConstantU32[3];
+	}
 
 	// polygon control
 	const auto& polygonControlReg = LatteGPUState.contextNew.PA_SU_SC_MODE_CNTL;
@@ -1041,6 +1187,13 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 	{
 	    renderCommandEncoder->setDepthClipMode(zClipEnable ? MTL::DepthClipModeClip : MTL::DepthClipModeClamp);
         encoderState.m_depthClipEnable = zClipEnable;
+	}
+
+	// Visibility result mode
+	if (m_occlusionQuery.m_active)
+	{
+	    auto mode = (m_occlusionQuery.m_currentIndex == INVALID_UINT32 ? MTL::VisibilityResultModeDisabled : MTL::VisibilityResultModeCounting);
+	    renderCommandEncoder->setVisibilityResultMode(mode, m_occlusionQuery.m_currentIndex * sizeof(uint64));
 	}
 
 	// todo - how does culling behave with rects?
@@ -1107,7 +1260,7 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
     {
         encoderState.m_scissor = m_state.m_scissor;
 
-        // TODO: clamp scissor to render target dimensions
+        // TODO: clamp scissor to render target dimensions?
         //scissor.width = ;
         //scissor.height = ;
         renderCommandEncoder->setScissorRect(encoderState.m_scissor);
@@ -1116,52 +1269,15 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 	// Resources
 
 	// Vertex buffers
-    for (uint8 i = 0; i < MAX_MTL_BUFFERS; i++)
+    for (uint8 i = 0; i < MAX_MTL_VERTEX_BUFFERS; i++)
     {
-        auto& vertexBufferRange = m_state.m_vertexBuffers[i];
-        if (vertexBufferRange.offset != INVALID_OFFSET)
+        size_t offset = m_state.m_vertexBufferOffsets[i];
+        if (offset != INVALID_OFFSET)
         {
-            MTL::Buffer* buffer;
-            size_t offset;
-
-            // Restride
-            if (usesGeometryShader)
-            {
-                // Object shaders don't need restriding, since the attributes are fetched in the shader
-                buffer = m_memoryManager->GetBufferCache();
-                offset = m_state.m_vertexBuffers[i].offset;
-            }
-            else
-            {
-                uint32 bufferBaseRegisterIndex = mmSQ_VTX_ATTRIBUTE_BLOCK_START + i * 7;
-                uint32 bufferStride = (LatteGPUState.contextNew.GetRawView()[bufferBaseRegisterIndex + 2] >> 11) & 0xFFFF;
-
-                auto restridedBuffer = m_memoryManager->RestrideBufferIfNeeded(i, bufferStride);
-
-                buffer = restridedBuffer.buffer;
-                offset = restridedBuffer.offset;
-            }
-
             // Bind
-            SetBuffer(renderCommandEncoder, GetMtlShaderType(vertexShader->shaderType, usesGeometryShader), buffer, offset, GET_MTL_VERTEX_BUFFER_INDEX(i));
+            SetBuffer(renderCommandEncoder, GetMtlShaderType(vertexShader->shaderType, usesGeometryShader), m_memoryManager->GetBufferCache(), offset, GET_MTL_VERTEX_BUFFER_INDEX(i));
         }
     }
-
-	// Render pipeline state
-	MTL::RenderPipelineState* renderPipelineState;
-	if (usesGeometryShader)
-	    renderPipelineState = m_pipelineCache->GetMeshPipelineState(fetchShader, vertexShader, geometryShader, pixelShader, m_state.m_lastUsedFBO, m_state.m_activeFBO, LatteGPUState.contextNew, hostIndexType);
-	else
-        renderPipelineState = m_pipelineCache->GetRenderPipelineState(fetchShader, vertexShader, pixelShader, m_state.m_lastUsedFBO, m_state.m_activeFBO, LatteGPUState.contextNew);
-
-    if (!renderPipelineState)
-        return;
-
-	if (renderPipelineState != encoderState.m_renderPipelineState)
-   	{
-        renderCommandEncoder->setRenderPipelineState(renderPipelineState);
-  		encoderState.m_renderPipelineState = renderPipelineState;
-   	}
 
 	// Prepare streamout
 	m_state.m_streamoutState.verticesPerInstance = count;
@@ -1183,12 +1299,15 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 		// We have already retrieved the buffer, no need for it to be locked anymore
 		bufferAllocator.UnlockBuffer(indexBufferIndex);
 	}
+
 	if (usesGeometryShader)
 	{
 	    if (indexBuffer)
 		    SetBuffer(renderCommandEncoder, METAL_SHADER_TYPE_OBJECT, indexBuffer, indexBufferOffset, vertexShader->resourceMapping.indexBufferBinding);
-		renderCommandEncoder->setObjectBytes(&hostIndexType, sizeof(hostIndexType), vertexShader->resourceMapping.indexTypeBinding);
-		encoderState.m_buffers[METAL_SHADER_TYPE_OBJECT][vertexShader->resourceMapping.indexTypeBinding] = {nullptr};
+
+		uint8 hostIndexTypeU8 = (uint8)hostIndexType;
+		renderCommandEncoder->setObjectBytes(&hostIndexTypeU8, sizeof(hostIndexTypeU8), vertexShader->resourceMapping.indexTypeBinding);
+        encoderState.m_buffers[METAL_SHADER_TYPE_OBJECT][vertexShader->resourceMapping.indexTypeBinding] = {nullptr};
 
 		uint32 verticesPerPrimitive = 0;
 		switch (primitiveMode)
@@ -1204,11 +1323,11 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
             verticesPerPrimitive = 3;
             break;
         default:
-            debug_printf("invalid primitive mode %u\n", (uint32)primitiveMode);
+            cemuLog_log(LogType::Force, "unimplemented geometry shader primitive mode {}", (uint32)primitiveMode);
             break;
         }
 
-		renderCommandEncoder->drawMeshThreadgroups(MTL::Size(count / verticesPerPrimitive, 1, 1), MTL::Size(verticesPerPrimitive, 1, 1), MTL::Size(1, 1, 1));
+		renderCommandEncoder->drawMeshThreadgroups(MTL::Size(count * instanceCount / verticesPerPrimitive, 1, 1), MTL::Size(verticesPerPrimitive, 1, 1), MTL::Size(1, 1, 1));
 	}
 	else
 	{
@@ -1225,9 +1344,18 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 
 	m_state.m_isFirstDrawInRenderPass = false;
 
-	LatteStreamout_FinishDrawcall(false);
+	// Occlusion queries
+	if (m_occlusionQuery.m_active)
+	    m_occlusionQuery.m_currentIndex = (m_occlusionQuery.m_currentIndex + 1) % OCCLUSION_QUERY_POOL_SIZE;
+
+	// Streamout
+	LatteStreamout_FinishDrawcall(m_memoryManager->UseHostMemoryForCache());
 
 	// Debug
+	if (fetchVertexManually)
+	    m_performanceMonitor.m_manualVertexFetchDraws++;
+	if (usesGeometryShader)
+	    m_performanceMonitor.m_meshDraws++;
 	if (primitiveMode == LattePrimitiveMode::TRIANGLE_FAN)
 	    m_performanceMonitor.m_triangleFans++;
 
@@ -1243,13 +1371,107 @@ void MetalRenderer::draw_endSequence()
 	bool hasReadback = LatteTextureReadback_Update();
 	m_recordedDrawcalls++;
 	// The number of draw calls needs to twice as big, since we are interrupting the render pass
-	if (m_recordedDrawcalls >= COMMIT_TRESHOLD * 2 || hasReadback)
+	// TODO: ucomment?
+	if (m_recordedDrawcalls >= m_commitTreshold * 2/* || hasReadback*/)
 	{
 		CommitCommandBuffer();
 
         // TODO: where should this be called?
         LatteTextureReadback_UpdateFinishedTransfers(false);
 	}
+}
+
+void MetalRenderer::draw_updateVertexBuffersDirectAccess()
+{
+	LatteFetchShader* parsedFetchShader = LatteSHRC_GetActiveFetchShader();
+	if (!parsedFetchShader)
+		return;
+
+	for (auto& bufferGroup : parsedFetchShader->bufferGroups)
+	{
+		uint32 bufferIndex = bufferGroup.attributeBufferIndex;
+		uint32 bufferBaseRegisterIndex = mmSQ_VTX_ATTRIBUTE_BLOCK_START + bufferIndex * 7;
+		MPTR bufferAddress = LatteGPUState.contextRegister[bufferBaseRegisterIndex + 0];
+
+		if (bufferAddress == MPTR_NULL) [[unlikely]]
+			bufferAddress = m_memoryManager->GetImportedMemBaseAddress();
+
+		m_state.m_vertexBufferOffsets[bufferIndex] = bufferAddress - m_memoryManager->GetImportedMemBaseAddress();
+	}
+}
+
+void MetalRenderer::draw_updateUniformBuffersDirectAccess(LatteDecompilerShader* shader, const uint32 uniformBufferRegOffset)
+{
+	if (shader->uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CBANK)
+	{
+		for (const auto& buf : shader->list_quickBufferList)
+		{
+			sint32 i = buf.index;
+			MPTR physicalAddr = LatteGPUState.contextRegister[uniformBufferRegOffset + i * 7 + 0];
+			uint32 uniformSize = LatteGPUState.contextRegister[uniformBufferRegOffset + i * 7 + 1] + 1;
+
+			if (physicalAddr == MPTR_NULL) [[unlikely]]
+			{
+				cemu_assert_unimplemented();
+				continue;
+			}
+			uniformSize = std::min<uint32>(uniformSize, buf.size);
+
+			cemu_assert_debug(physicalAddr < 0x50000000);
+
+			uint32 bufferIndex = i;
+			cemu_assert_debug(bufferIndex < 16);
+
+			m_state.m_uniformBufferOffsets[GetMtlGeneralShaderType(shader->shaderType)][bufferIndex] = physicalAddr - m_memoryManager->GetImportedMemBaseAddress();
+		}
+	}
+}
+
+void MetalRenderer::draw_handleSpecialState5()
+{
+    LatteMRT::UpdateCurrentFBO();
+	LatteRenderTarget_updateViewport();
+
+	LatteTextureView* colorBuffer = LatteMRT::GetColorAttachment(0);
+	LatteTextureView* depthBuffer = LatteMRT::GetDepthAttachment();
+	auto colorTextureMtl = static_cast<LatteTextureViewMtl*>(colorBuffer);
+	auto depthTextureMtl = static_cast<LatteTextureViewMtl*>(depthBuffer);
+
+	sint32 vpWidth, vpHeight;
+	LatteMRT::GetVirtualViewportDimensions(vpWidth, vpHeight);
+
+	// Get the pipeline
+	MTL::PixelFormat colorPixelFormat = colorTextureMtl->GetRGBAView()->pixelFormat();
+	auto& pipeline = m_copyDepthToColorPipelines[colorPixelFormat];
+	if (!pipeline)
+	{
+	    m_copyDepthToColorDesc->colorAttachments()->object(0)->setPixelFormat(colorPixelFormat);
+
+        NS::Error* error = nullptr;
+        pipeline = m_device->newRenderPipelineState(m_copyDepthToColorDesc, &error);
+        if (error)
+        {
+            cemuLog_log(LogType::Force, "failed to create copy depth to color pipeline (error: {})", error->localizedDescription()->utf8String());
+        }
+	}
+
+	// Sadly, we need to end encoding to ensure that the depth data is up-to-date
+	EndEncoding();
+
+	// Copy depth to color
+	auto renderCommandEncoder = GetRenderCommandEncoder();
+
+	auto& encoderState = m_state.m_encoderState;
+
+	renderCommandEncoder->setRenderPipelineState(pipeline);
+	// TODO: make a helper function for this
+	encoderState.m_renderPipelineState = pipeline;
+	SetTexture(renderCommandEncoder, METAL_SHADER_TYPE_FRAGMENT, depthTextureMtl->GetRGBAView(), GET_HELPER_TEXTURE_BINDING(0));
+	// TODO: make a helper function for this
+	renderCommandEncoder->setFragmentBytes(&vpWidth, sizeof(sint32), GET_HELPER_BUFFER_BINDING(0));
+	encoderState.m_buffers[METAL_SHADER_TYPE_FRAGMENT][GET_HELPER_BUFFER_BINDING(0)] = {nullptr};
+
+	renderCommandEncoder->drawPrimitives(MTL::PrimitiveTypeTriangle,  NS::UInteger(0),  NS::UInteger(3));
 }
 
 void* MetalRenderer::indexData_reserveIndexMemory(uint32 size, uint32& offset, uint32& bufferIndex)
@@ -1277,13 +1499,53 @@ void MetalRenderer::indexData_uploadIndexMemory(uint32 bufferIndex, uint32 offse
     */
 }
 
+LatteQueryObject* MetalRenderer::occlusionQuery_create() {
+	return new LatteQueryObjectMtl(this);
+}
+
+void MetalRenderer::occlusionQuery_destroy(LatteQueryObject* queryObj) {
+    auto queryObjMtl = static_cast<LatteQueryObjectMtl*>(queryObj);
+    delete queryObjMtl;
+}
+
+void MetalRenderer::occlusionQuery_flush() {
+    if (m_occlusionQuery.m_lastCommandBuffer)
+        m_occlusionQuery.m_lastCommandBuffer->waitUntilCompleted();
+}
+
+void MetalRenderer::occlusionQuery_updateState() {
+    ProcessFinishedCommandBuffers();
+}
+
 void MetalRenderer::SetBuffer(MTL::RenderCommandEncoder* renderCommandEncoder, MetalShaderType shaderType, MTL::Buffer* buffer, size_t offset, uint32 index)
 {
     auto& boundBuffer = m_state.m_encoderState.m_buffers[shaderType][index];
     if (buffer == boundBuffer.m_buffer && offset == boundBuffer.m_offset)
         return;
 
-    // TODO: only set the offset if only offset changed
+    if (buffer == boundBuffer.m_buffer)
+    {
+        // Update just the offset
+        boundBuffer.m_offset = offset;
+
+        switch (shaderType)
+        {
+        case METAL_SHADER_TYPE_VERTEX:
+            renderCommandEncoder->setVertexBufferOffset(offset, index);
+            break;
+        case METAL_SHADER_TYPE_OBJECT:
+            renderCommandEncoder->setObjectBufferOffset(offset, index);
+            break;
+        case METAL_SHADER_TYPE_MESH:
+            renderCommandEncoder->setMeshBufferOffset(offset, index);
+            break;
+        case METAL_SHADER_TYPE_FRAGMENT:
+            renderCommandEncoder->setFragmentBufferOffset(offset, index);
+            break;
+        }
+
+        return;
+    }
 
     boundBuffer = {buffer, offset};
 
@@ -1356,35 +1618,34 @@ void MetalRenderer::SetSamplerState(MTL::RenderCommandEncoder* renderCommandEnco
 
 MTL::CommandBuffer* MetalRenderer::GetCommandBuffer()
 {
-    bool needsNewCommandBuffer = (m_commandBuffers.empty() || m_commandBuffers.back().m_commited);
+    bool needsNewCommandBuffer = (!m_currentCommandBuffer.m_commandBuffer || m_currentCommandBuffer.m_commited);
     if (needsNewCommandBuffer)
 	{
         // Debug
         //m_commandQueue->insertDebugCaptureBoundary();
 
 	    MTL::CommandBuffer* mtlCommandBuffer = m_commandQueue->commandBuffer();
-		m_commandBuffers.push_back({mtlCommandBuffer});
+		m_currentCommandBuffer = {mtlCommandBuffer};
+
+		// Wait for the previous command buffer
+		if (m_eventValue != -1)
+		    mtlCommandBuffer->encodeWait(m_event, m_eventValue);
+
+		m_recordedDrawcalls = 0;
+		m_commitTreshold = m_defaultCommitTreshlod;
 
 		// Notify memory manager about the new command buffer
         m_memoryManager->GetTemporaryBufferAllocator().SetActiveCommandBuffer(mtlCommandBuffer);
+
+        // Debug
+        m_performanceMonitor.m_commandBuffers++;
 
 		return mtlCommandBuffer;
 	}
 	else
 	{
-	    return m_commandBuffers.back().m_commandBuffer;
+	    return m_currentCommandBuffer.m_commandBuffer;
 	}
-}
-
-bool MetalRenderer::CommandBufferCompleted(MTL::CommandBuffer* commandBuffer)
-{
-    auto status = commandBuffer->status();
-    return (status == MTL::CommandBufferStatusCompleted || status == MTL::CommandBufferStatusError);
-}
-
-void MetalRenderer::WaitForCommandBufferCompletion(MTL::CommandBuffer* commandBuffer)
-{
-    commandBuffer->waitUntilCompleted();
 }
 
 MTL::RenderCommandEncoder* MetalRenderer::GetTemporaryRenderCommandEncoder(MTL::RenderPassDescriptor* renderPassDescriptor)
@@ -1416,12 +1677,12 @@ MTL::RenderCommandEncoder* MetalRenderer::GetRenderCommandEncoder(bool forceRecr
         {
             if (m_encoderType == MetalEncoderType::Render)
             {
-                bool needsNewRenderPass = (m_state.m_lastUsedFBO == nullptr);
+                bool needsNewRenderPass = (m_state.m_lastUsedFBO.m_fbo == nullptr);
                 if (!needsNewRenderPass)
                 {
                     for (uint8 i = 0; i < 8; i++)
                     {
-                        if (m_state.m_activeFBO->colorBuffer[i].texture && m_state.m_activeFBO->colorBuffer[i].texture != m_state.m_lastUsedFBO->colorBuffer[i].texture)
+                        if (m_state.m_activeFBO.m_fbo->colorBuffer[i].texture && m_state.m_activeFBO.m_fbo->colorBuffer[i].texture != m_state.m_lastUsedFBO.m_fbo->colorBuffer[i].texture)
                         {
                             needsNewRenderPass = true;
                             break;
@@ -1431,7 +1692,7 @@ MTL::RenderCommandEncoder* MetalRenderer::GetRenderCommandEncoder(bool forceRecr
 
                 if (!needsNewRenderPass)
                 {
-                    if (m_state.m_activeFBO->depthBuffer.texture && (m_state.m_activeFBO->depthBuffer.texture != m_state.m_lastUsedFBO->depthBuffer.texture || ( m_state.m_activeFBO->depthBuffer.hasStencil && !m_state.m_lastUsedFBO->depthBuffer.hasStencil)))
+                    if (m_state.m_activeFBO.m_fbo->depthBuffer.texture && (m_state.m_activeFBO.m_fbo->depthBuffer.texture != m_state.m_lastUsedFBO.m_fbo->depthBuffer.texture || ( m_state.m_activeFBO.m_fbo->depthBuffer.hasStencil && !m_state.m_lastUsedFBO.m_fbo->depthBuffer.hasStencil)))
                     {
                         needsNewRenderPass = true;
                     }
@@ -1449,16 +1710,16 @@ MTL::RenderCommandEncoder* MetalRenderer::GetRenderCommandEncoder(bool forceRecr
 
     auto commandBuffer = GetCommandBuffer();
 
-    // Update state
-    m_state.m_lastUsedFBO = m_state.m_activeFBO;
-    m_state.m_isFirstDrawInRenderPass = true;
-
-    auto renderCommandEncoder = commandBuffer->renderCommandEncoder(m_state.m_activeFBO->GetRenderPassDescriptor());
+    auto renderCommandEncoder = commandBuffer->renderCommandEncoder(m_state.m_activeFBO.m_fbo->GetRenderPassDescriptor());
 #ifdef CEMU_DEBUG_ASSERT
     renderCommandEncoder->setLabel(GetLabel("Render command encoder", renderCommandEncoder));
 #endif
     m_commandEncoder = renderCommandEncoder;
     m_encoderType = MetalEncoderType::Render;
+
+    // Update state
+    m_state.m_lastUsedFBO = m_state.m_activeFBO;
+    m_state.m_isFirstDrawInRenderPass = true;
 
     ResetEncoderState();
 
@@ -1519,41 +1780,73 @@ void MetalRenderer::EndEncoding()
     if (m_commandEncoder)
     {
         m_commandEncoder->endEncoding();
-        m_commandEncoder->release();
+        //m_commandEncoder->release();
         m_commandEncoder = nullptr;
         m_encoderType = MetalEncoderType::None;
 
         // Commit the command buffer if enough draw calls have been recorded
-        if (m_recordedDrawcalls >= COMMIT_TRESHOLD)
+        if (m_recordedDrawcalls >= m_commitTreshold)
             CommitCommandBuffer();
     }
 }
 
 void MetalRenderer::CommitCommandBuffer()
 {
-    m_recordedDrawcalls = 0;
+    if (!m_currentCommandBuffer.m_commandBuffer)
+        return;
 
-    if (m_commandBuffers.size() != 0)
+    EndEncoding();
+
+    ProcessFinishedCommandBuffers();
+
+    // Commit the command buffer
+    if (!m_currentCommandBuffer.m_commited)
     {
-        EndEncoding();
+        // Handled differently, since it seems like Metal doesn't always call the completion handler
+        //commandBuffer.m_commandBuffer->addCompletedHandler(^(MTL::CommandBuffer*) {
+        //    m_memoryManager->GetTemporaryBufferAllocator().CommandBufferFinished(commandBuffer.m_commandBuffer);
+        //});
 
-        auto& commandBuffer = m_commandBuffers.back();
-        if (!commandBuffer.m_commited)
+        // Signal event
+        m_eventValue = (m_eventValue + 1) % EVENT_VALUE_WRAP;
+        auto mtlCommandBuffer = m_currentCommandBuffer.m_commandBuffer;
+        mtlCommandBuffer->encodeSignalEvent(m_event, m_eventValue);
+
+        mtlCommandBuffer->commit();
+        m_currentCommandBuffer.m_commited = true;
+
+        m_executingCommandBuffers.push_back(mtlCommandBuffer);
+
+        m_memoryManager->GetTemporaryBufferAllocator().SetActiveCommandBuffer(nullptr);
+
+        // Debug
+        //m_commandQueue->insertDebugCaptureBoundary();
+    }
+}
+
+void MetalRenderer::ProcessFinishedCommandBuffers()
+{
+    // Check for finished command buffers
+    bool atLeastOneCompleted = false;
+    for (auto it = m_executingCommandBuffers.begin(); it != m_executingCommandBuffers.end();)
+    {
+        auto commandBuffer = *it;
+        if (CommandBufferCompleted(commandBuffer))
         {
-            // Handled differently, since it seems like Metal doesn't always call the completion handler
-            //commandBuffer.m_commandBuffer->addCompletedHandler(^(MTL::CommandBuffer*) {
-            //    m_memoryManager->GetTemporaryBufferAllocator().CommandBufferFinished(commandBuffer.m_commandBuffer);
-            //});
-
-            commandBuffer.m_commandBuffer->commit();
-            commandBuffer.m_commited = true;
-
-            m_memoryManager->GetTemporaryBufferAllocator().SetActiveCommandBuffer(nullptr);
-
-            // Debug
-            //m_commandQueue->insertDebugCaptureBoundary();
+            m_memoryManager->GetTemporaryBufferAllocator().CommandBufferFinished(commandBuffer);
+            //commandBuffer->release();
+            it = m_executingCommandBuffers.erase(it);
+            atLeastOneCompleted = true;
+        }
+        else
+        {
+            ++it;
         }
     }
+
+    // Invalidate indices if at least one command buffer has completed
+    if (atLeastOneCompleted)
+        LatteIndices_invalidateAll();
 }
 
 bool MetalRenderer::AcquireDrawable(bool mainWindow)
@@ -1609,7 +1902,7 @@ bool MetalRenderer::CheckIfRenderPassNeedsFlush(LatteDecompilerShader* shader)
 		    // If the texture is also used in the current render pass, we need to end the render pass to "flush" the texture
 			for (uint8 i = 0; i < LATTE_NUM_COLOR_TARGET; i++)
 			{
-			    auto colorTarget = m_state.m_activeFBO->colorBuffer[i].texture;
+			    auto colorTarget = m_state.m_activeFBO.m_fbo->colorBuffer[i].texture;
 				if (colorTarget && colorTarget->baseTexture == baseTexture)
 				    return true;
 			}
@@ -1652,14 +1945,13 @@ void MetalRenderer::BindStageResources(MTL::RenderCommandEncoder* renderCommandE
 		uint32 binding = shader->resourceMapping.getTextureBaseBindingPoint() + i;
 		if (binding >= MAX_MTL_TEXTURES)
 		{
-		    debug_printf("invalid texture binding %u\n", binding);
+		    cemuLog_logOnce(LogType::Force, "invalid texture binding {}", binding);
             continue;
 		}
 
 		auto textureView = m_state.m_textures[hostTextureUnit];
 		if (!textureView)
 		{
-		    // TODO: don't bind if already bound
             if (textureDim == Latte::E_DIM::DIM_1D)
                 SetTexture(renderCommandEncoder, mtlShaderType, m_nullTexture1D, binding);
            	else
@@ -1801,7 +2093,7 @@ void MetalRenderer::BindStageResources(MTL::RenderCommandEncoder* renderCommandE
     		uint32 binding = shader->resourceMapping.uniformBuffersBindingPoint[i];
     		if (binding >= MAX_MTL_BUFFERS)
     		{
-    		    debug_printf("invalid buffer binding%u\n", binding);
+    		    cemuLog_logOnce(LogType::Force, "invalid buffer binding {}", binding);
     			continue;
     		}
 
@@ -1831,8 +2123,6 @@ void MetalRenderer::ClearColorTextureInternal(MTL::Texture* mtlTexture, sint32 s
     colorAttachment->setSlice(sliceIndex);
     colorAttachment->setLevel(mipIndex);
 
-    MTL::Texture* colorRenderTargets[8] = {nullptr};
-    colorRenderTargets[0] = mtlTexture;
     GetTemporaryRenderCommandEncoder(renderPassDescriptor);
     renderPassDescriptor->release();
     EndEncoding();
@@ -1843,13 +2133,15 @@ void MetalRenderer::ClearColorTextureInternal(MTL::Texture* mtlTexture, sint32 s
 
 void MetalRenderer::CopyBufferToBuffer(MTL::Buffer* src, uint32 srcOffset, MTL::Buffer* dst, uint32 dstOffset, uint32 size, MTL::RenderStages after, MTL::RenderStages before)
 {
+    // TODO: uncomment and fix performance issues
     // Do the copy in a vertex shader on Apple GPUs
+    /*
     if (m_isAppleGPU && m_encoderType == MetalEncoderType::Render)
     {
         auto renderCommandEncoder = static_cast<MTL::RenderCommandEncoder*>(m_commandEncoder);
 
-		MTL::Resource* barrierBuffers[] = {src};
-        renderCommandEncoder->memoryBarrier(barrierBuffers, 1, after, MTL::RenderStageVertex);
+        MTL::Resource* barrierBuffers[] = {src};
+        renderCommandEncoder->memoryBarrier(barrierBuffers, 1, after, after | MTL::RenderStageVertex);
 
 		renderCommandEncoder->setRenderPipelineState(m_copyBufferToBufferPipeline->GetRenderPipelineState());
 		m_state.m_encoderState.m_renderPipelineState = m_copyBufferToBufferPipeline->GetRenderPipelineState();
@@ -1860,14 +2152,15 @@ void MetalRenderer::CopyBufferToBuffer(MTL::Buffer* src, uint32 srcOffset, MTL::
 		renderCommandEncoder->drawPrimitives(MTL::PrimitiveTypePoint, NS::UInteger(0), NS::UInteger(size));
 
 		barrierBuffers[0] = dst;
-        renderCommandEncoder->memoryBarrier(barrierBuffers, 1, MTL::RenderStageVertex, before);
+        renderCommandEncoder->memoryBarrier(barrierBuffers, 1, before | MTL::RenderStageVertex, before);
     }
     else
     {
+    */
         auto blitCommandEncoder = GetBlitCommandEncoder();
 
         blitCommandEncoder->copyFromBuffer(src, srcOffset, dst, dstOffset, size);
-    }
+    //}
 }
 
 void MetalRenderer::SwapBuffer(bool mainWindow)
@@ -1886,4 +2179,60 @@ void MetalRenderer::EnsureImGuiBackend()
         ImGui_ImplMetal_Init(m_device);
         //ImGui_ImplMetal_CreateFontsTexture(m_device);
     }
+}
+
+void MetalRenderer::StartCapture()
+{
+    auto captureManager = MTL::CaptureManager::sharedCaptureManager();
+    auto desc = MTL::CaptureDescriptor::alloc()->init();
+    desc->setCaptureObject(m_device);
+
+    // Check if a debugger with support for GPU capture is attached
+    if (captureManager->supportsDestination(MTL::CaptureDestinationDeveloperTools))
+    {
+        desc->setDestination(MTL::CaptureDestinationDeveloperTools);
+    }
+    else
+    {
+        if (GetConfig().gpu_capture_dir.GetValue().empty())
+        {
+            cemuLog_log(LogType::Force, "No GPU capture directory specified, cannot do a GPU capture");
+            return;
+        }
+
+        // Check if the GPU trace document destination is available
+        if (!captureManager->supportsDestination(MTL::CaptureDestinationGPUTraceDocument))
+        {
+            cemuLog_log(LogType::Force, "GPU trace document destination is not available, cannot do a GPU capture");
+            return;
+        }
+
+        // Get current date and time as a string
+        auto now = std::chrono::system_clock::now();
+        std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+        std::ostringstream oss;
+        oss << std::put_time(std::localtime(&now_time), "%Y-%m-%d_%H-%M-%S");
+        std::string now_str = oss.str();
+
+        std::string capturePath = fmt::format("{}/cemu_{}.gputrace", GetConfig().gpu_capture_dir.GetValue(), now_str);
+        desc->setDestination(MTL::CaptureDestinationGPUTraceDocument);
+        desc->setOutputURL(ToNSURL(capturePath));
+    }
+
+    NS::Error* error = nullptr;
+    captureManager->startCapture(desc, &error);
+    if (error)
+    {
+        cemuLog_log(LogType::Force, "Failed to start GPU capture: {}", error->localizedDescription()->utf8String());
+    }
+
+    m_capturing = true;
+}
+
+void MetalRenderer::EndCapture()
+{
+    auto captureManager = MTL::CaptureManager::sharedCaptureManager();
+    captureManager->stopCapture();
+
+    m_capturing = false;
 }

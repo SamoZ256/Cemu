@@ -4,6 +4,8 @@
 
 #include "Cafe/HW/Latte/Renderer/Metal/MetalLayerHandle.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalPerformanceMonitor.h"
+#include "Cafe/HW/Latte/Renderer/Metal/MetalOutputShaderCache.h"
+#include "Cafe/HW/Latte/Renderer/Metal/MetalAttachmentsInfo.h"
 
 struct MetalBufferAllocation
 {
@@ -16,21 +18,6 @@ struct MetalBufferAllocation
     {
         return offset != INVALID_OFFSET;
     }
-};
-
-struct MetalRestrideInfo
-{
-    bool memoryInvalidated = true;
-    size_t lastStride = 0;
-    MetalBufferAllocation allocation{};
-};
-
-struct MetalBoundBuffer
-{
-    size_t offset = INVALID_OFFSET;
-    size_t size = 0;
-    // Memory manager will write restride info to this variable
-    MetalRestrideInfo restrideInfo;
 };
 
 enum MetalGeneralShaderType
@@ -95,6 +82,7 @@ struct MetalEncoderState
     MTL::ScissorRect m_scissor;
     uint32 m_stencilRefFront = 0;
     uint32 m_stencilRefBack = 0;
+    uint32 m_blendColor[4] = {0};
     uint32 m_depthBias = 0;
    	uint32 m_depthSlope = 0;
    	uint32 m_depthClamp = 0;
@@ -117,6 +105,12 @@ struct MetalStreamoutState
 	sint32 verticesPerInstance;
 };
 
+struct MetalActiveFBOState
+{
+    class CachedFBOMtl* m_fbo = nullptr;
+    MetalAttachmentsInfo m_attachmentsInfo;
+};
+
 struct MetalState
 {
     MetalEncoderState m_encoderState{};
@@ -126,11 +120,11 @@ struct MetalState
     bool m_skipDrawSequence = false;
     bool m_isFirstDrawInRenderPass = true;
 
-    class CachedFBOMtl* m_activeFBO = nullptr;
-    // If the FBO changes, but it's the same FBO as the last one with some omitted attachments, this FBO doesn't change'
-    class CachedFBOMtl* m_lastUsedFBO = nullptr;
+    MetalActiveFBOState m_activeFBO;
+    // If the FBO changes, but it's the same FBO as the last one with some omitted attachments, this FBO doesn't change
+    MetalActiveFBOState m_lastUsedFBO;
 
-    MetalBoundBuffer m_vertexBuffers[MAX_MTL_BUFFERS] = {{}};
+    size_t m_vertexBufferOffsets[MAX_MTL_VERTEX_BUFFERS];
     // TODO: find out what is the max number of bound textures on the Wii U
     class LatteTextureViewMtl* m_textures[64] = {nullptr};
     size_t m_uniformBufferOffsets[METAL_GENERAL_SHADER_TYPE_TOTAL][MAX_MTL_BUFFERS];
@@ -143,7 +137,7 @@ struct MetalState
 
 struct MetalCommandBuffer
 {
-    MTL::CommandBuffer* m_commandBuffer;
+    MTL::CommandBuffer* m_commandBuffer = nullptr;
     bool m_commited = false;
 };
 
@@ -155,36 +149,19 @@ enum class MetalEncoderType
     Blit,
 };
 
-// HACK: Dummy occlusion query object for Metal
-class LatteQueryObjectMtl : public LatteQueryObject
-{
-public:
-	LatteQueryObjectMtl(class MetalRenderer* mtlRenderer) : m_mtlr{mtlRenderer} {}
-
-	bool getResult(uint64& numSamplesPassed) override
-	{
-	    cemuLog_log(LogType::MetalLogging, "LatteQueryObjectMtl::getResult: occlusion queries are not yet supported on Metal");
-        return true;
-	}
-
-	void begin() override
-	{
-	    cemuLog_log(LogType::MetalLogging, "LatteQueryObjectMtl::begin: occlusion queries are not yet supported on Metal");
-	}
-
-	void end() override
-	{
-	    cemuLog_log(LogType::MetalLogging, "LatteQueryObjectMtl::end: occlusion queries are not yet supported on Metal");
-	}
-
-private:
-	class MetalRenderer* m_mtlr;
-};
-
 class MetalRenderer : public Renderer
 {
 public:
-    static const inline int TEXTURE_READBACK_SIZE = 32 * 1024 * 1024; // 32 MB
+    static constexpr uint32 OCCLUSION_QUERY_POOL_SIZE = 1024;
+    static constexpr uint32 TEXTURE_READBACK_SIZE = 32 * 1024 * 1024; // 32 MB
+
+    struct DeviceInfo
+    {
+        std::string name;
+        uint64 uuid;
+    };
+
+    static std::vector<DeviceInfo> GetDevices();
 
     MetalRenderer();
 	~MetalRenderer() override;
@@ -217,9 +194,7 @@ public:
 	void DrawEmptyFrame(bool mainWindow) override;
 	void SwapBuffers(bool swapTV, bool swapDRC) override;
 
-	void HandleScreenshotRequest(LatteTextureView* texView, bool padView) override {
-	    cemuLog_log(LogType::MetalLogging, "Screenshots are not yet supported on Metal");
-	}
+	void HandleScreenshotRequest(LatteTextureView* texView, bool padView) override;
 
 	void DrawBackbufferQuad(LatteTextureView* texView, RendererOutputShader* shader, bool useLinearTexFilter,
 									sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight,
@@ -291,37 +266,54 @@ public:
 	void draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 instanceCount, uint32 count, MPTR indexDataMPTR, Latte::LATTE_VGT_DMA_INDEX_TYPE::E_INDEX_TYPE indexType, bool isFirst) override;
 	void draw_endSequence() override;
 
+	void draw_updateVertexBuffersDirectAccess();
+	void draw_updateUniformBuffersDirectAccess(LatteDecompilerShader* shader, const uint32 uniformBufferRegOffset);
+
+	void draw_handleSpecialState5();
+
 	// index
 	void* indexData_reserveIndexMemory(uint32 size, uint32& offset, uint32& bufferIndex) override;
 	void indexData_uploadIndexMemory(uint32 bufferIndex, uint32 offset, uint32 size) override;
 
 	// occlusion queries
-	LatteQueryObject* occlusionQuery_create() override {
-	    cemuLog_log(LogType::MetalLogging, "MetalRenderer::occlusionQuery_create: Occlusion queries are not yet supported on Metal");
-
-		return new LatteQueryObjectMtl(this);
-	}
-
-	void occlusionQuery_destroy(LatteQueryObject* queryObj) override {
-	    cemuLog_log(LogType::MetalLogging, "MetalRenderer::occlusionQuery_destroy: occlusion queries are not yet supported on Metal");
-	}
-
-	void occlusionQuery_flush() override {
-	    cemuLog_log(LogType::MetalLogging, "MetalRenderer::occlusionQuery_flush: occlusion queries are not yet supported on Metal");
-	}
-
-	void occlusionQuery_updateState() override {
-	    cemuLog_log(LogType::MetalLogging, "MetalRenderer::occlusionQuery_updateState: occlusion queries are not yet supported on Metal");
-	}
+	LatteQueryObject* occlusionQuery_create() override;
+	void occlusionQuery_destroy(LatteQueryObject* queryObj) override;
+	void occlusionQuery_flush() override;
+	void occlusionQuery_updateState() override;
 
 	// Helpers
 	MetalPerformanceMonitor& GetPerformanceMonitor() { return m_performanceMonitor; }
 
+	void SetShouldMaximizeConcurrentCompilation(bool shouldMaximizeConcurrentCompilation)
+	{
+	    if (m_supportsMetal3)
+	        m_device->setShouldMaximizeConcurrentCompilation(shouldMaximizeConcurrentCompilation);
+	}
+
+	bool IsCommandBufferActive() const
+	{
+        return (m_currentCommandBuffer.m_commandBuffer && !m_currentCommandBuffer.m_commited);
+    }
+
 	MTL::CommandBuffer* GetCurrentCommandBuffer()
     {
-        cemu_assert_debug(m_commandBuffers.size() != 0);
+        cemu_assert_debug(m_currentCommandBuffer.m_commandBuffer);
 
-        return m_commandBuffers[m_commandBuffers.size() - 1].m_commandBuffer;
+        return m_currentCommandBuffer.m_commandBuffer;
+    }
+
+    MTL::CommandBuffer* GetAndRetainCurrentCommandBufferIfNotCompleted()
+    {
+        // The command buffer has been commited and has finished execution
+        if (m_currentCommandBuffer.m_commited && m_executingCommandBuffers.size() == 0)
+            return nullptr;
+
+        return GetCurrentCommandBuffer()->retain();
+    }
+
+    void RequestSoonCommit()
+    {
+        m_commitTreshold = m_recordedDrawcalls + 8;
     }
 
     MTL::CommandEncoder* GetCommandEncoder()
@@ -361,14 +353,13 @@ public:
     void SetSamplerState(MTL::RenderCommandEncoder* renderCommandEncoder, MetalShaderType shaderType, MTL::SamplerState* samplerState, uint32 index);
 
 	MTL::CommandBuffer* GetCommandBuffer();
-	bool CommandBufferCompleted(MTL::CommandBuffer* commandBuffer);
-	void WaitForCommandBufferCompletion(MTL::CommandBuffer* commandBuffer);
 	MTL::RenderCommandEncoder* GetTemporaryRenderCommandEncoder(MTL::RenderPassDescriptor* renderPassDescriptor);
 	MTL::RenderCommandEncoder* GetRenderCommandEncoder(bool forceRecreate = false);
     MTL::ComputeCommandEncoder* GetComputeCommandEncoder();
     MTL::BlitCommandEncoder* GetBlitCommandEncoder();
     void EndEncoding();
     void CommitCommandBuffer();
+    void ProcessFinishedCommandBuffers();
 
     bool AcquireDrawable(bool mainWindow);
 
@@ -395,11 +386,6 @@ public:
         return m_supportsMetal3;
     }
 
-    const MetalPixelFormatSupport& GetPixelFormatSupport() const
-    {
-        return m_pixelFormatSupport;
-    }
-
     //MTL::StorageMode GetOptimalTextureStorageMode() const
     //{
     //    return (m_isAppleGPU ? MTL::StorageModeShared : MTL::StorageModePrivate);
@@ -410,9 +396,74 @@ public:
         return (m_hasUnifiedMemory ? MTL::ResourceStorageModeShared : MTL::ResourceStorageModeManaged);
     }
 
-    MTL::Buffer* GetTextureReadbackBuffer() const
+    MTL::Texture* GetNullTexture2D() const
     {
+        return m_nullTexture2D;
+    }
+
+    MTL::Buffer* GetTextureReadbackBuffer()
+    {
+        if (!m_readbackBuffer)
+        {
+            m_readbackBuffer = m_device->newBuffer(TEXTURE_READBACK_SIZE, MTL::ResourceStorageModeShared);
+#ifdef CEMU_DEBUG_ASSERT
+            m_readbackBuffer->setLabel(GetLabel("Texture readback buffer", m_readbackBuffer));
+#endif
+        }
+
         return m_readbackBuffer;
+    }
+
+    MTL::Buffer* GetXfbRingBuffer()
+    {
+        if (!m_xfbRingBuffer)
+        {
+            // HACK: using just LatteStreamout_GetRingBufferSize will cause page faults
+            m_xfbRingBuffer = m_device->newBuffer(LatteStreamout_GetRingBufferSize() * 4, MTL::ResourceStorageModePrivate);
+#ifdef CEMU_DEBUG_ASSERT
+            m_xfbRingBuffer->setLabel(GetLabel("Transform feedback buffer", m_xfbRingBuffer));
+#endif
+        }
+
+        return m_xfbRingBuffer;
+    }
+
+    MTL::Buffer* GetOcclusionQueryResultBuffer() const
+    {
+        return m_occlusionQuery.m_resultBuffer;
+    }
+
+    uint64* GetOcclusionQueryResultsPtr()
+    {
+        return m_occlusionQuery.m_resultsPtr;
+    }
+
+    uint32 GetOcclusionQueryIndex()
+    {
+        return m_occlusionQuery.m_currentIndex;
+    }
+
+    void BeginOcclusionQuery()
+    {
+        m_occlusionQuery.m_active = true;
+    }
+
+    void EndOcclusionQuery()
+    {
+        m_occlusionQuery.m_active = false;
+
+        // Release the old command buffer
+        if (m_occlusionQuery.m_lastCommandBuffer)
+            m_occlusionQuery.m_lastCommandBuffer->release();
+
+        // Get and retain the current command buffer
+        m_occlusionQuery.m_lastCommandBuffer = GetAndRetainCurrentCommandBufferIfNotCompleted();
+    }
+
+    // GPU capture
+    void CaptureFrame()
+    {
+        m_captureFrame = true;
     }
 
 private:
@@ -434,18 +485,21 @@ private:
 
 	// Managers and caches
 	class MetalMemoryManager* m_memoryManager;
+	class MetalOutputShaderCache* m_outputShaderCache;
 	class MetalPipelineCache* m_pipelineCache;
 	class MetalDepthStencilCache* m_depthStencilCache;
 	class MetalSamplerCache* m_samplerCache;
 
 	// Pipelines
-	MTL::RenderPipelineState* m_presentPipelineLinear;
-	MTL::RenderPipelineState* m_presentPipelineSRGB;
+	MTL::RenderPipelineDescriptor* m_copyDepthToColorDesc;
+	std::map<MTL::PixelFormat, MTL::RenderPipelineState*> m_copyDepthToColorPipelines;
 
-	// Hybrid pipelines
-	class MetalHybridComputePipeline* m_copyBufferToBufferPipeline;
-	//class MetalHybridComputePipeline* m_copyTextureToTexturePipeline;
-	class MetalHybridComputePipeline* m_restrideBufferPipeline;
+	// Void vertex pipelines
+	class MetalVoidVertexPipeline* m_copyBufferToBufferPipeline;
+
+	// Synchronization resources
+	MTL::Event* m_event;
+	int32_t m_eventValue = -1;
 
 	// Resources
 	MTL::SamplerState* m_nearestSampler;
@@ -456,22 +510,40 @@ private:
 	MTL::Texture* m_nullTexture2D;
 
 	// Texture readback
-	MTL::Buffer* m_readbackBuffer;
+	MTL::Buffer* m_readbackBuffer = nullptr;
 	uint32 m_readbackBufferWriteOffset = 0;
 
 	// Transform feedback
-	MTL::Buffer* m_xfbRingBuffer;
+	MTL::Buffer* m_xfbRingBuffer = nullptr;
+
+	// Occlusion queries
+	struct
+	{
+    	MTL::Buffer* m_resultBuffer;
+    	uint64* m_resultsPtr;
+    	uint32 m_currentIndex = 0;
+        bool m_active = false;
+        MTL::CommandBuffer* m_lastCommandBuffer = nullptr;
+	} m_occlusionQuery;
 
 	// Active objects
-	std::vector<MetalCommandBuffer> m_commandBuffers;
+	MetalCommandBuffer m_currentCommandBuffer{};
+	std::vector<MTL::CommandBuffer*> m_executingCommandBuffers;
 	MetalEncoderType m_encoderType = MetalEncoderType::None;
 	MTL::CommandEncoder* m_commandEncoder = nullptr;
 
-    uint32 m_recordedDrawcalls = 0;
+    uint32 m_recordedDrawcalls;
+    uint32 m_defaultCommitTreshlod;
+    uint32 m_commitTreshold;
 
 	// State
 	MetalState m_state;
 
+	// GPU capture
+	bool m_captureFrame = false;
+	bool m_capturing = false;
+
+	// Helpers
 	MetalLayerHandle& GetLayer(bool mainWindow)
 	{
 	    return (mainWindow ? m_mainLayer : m_padLayer);
@@ -480,4 +552,8 @@ private:
 	void SwapBuffer(bool mainWindow);
 
 	void EnsureImGuiBackend();
+
+	// GPU capture
+	void StartCapture();
+	void EndCapture();
 };

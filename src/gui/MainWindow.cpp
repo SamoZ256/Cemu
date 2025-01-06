@@ -1,3 +1,5 @@
+#include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
+#include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "gui/wxgui.h"
 #include "gui/MainWindow.h"
 #include "gui/guiWrapper.h"
@@ -137,6 +139,7 @@ enum
 	MAINFRAME_MENU_ID_DEBUG_VIEW_TEXTURE_RELATIONS,
 	MAINFRAME_MENU_ID_DEBUG_AUDIO_AUX_ONLY,
 	MAINFRAME_MENU_ID_DEBUG_VK_ACCURATE_BARRIERS,
+	MAINFRAME_MENU_ID_DEBUG_GPU_CAPTURE,
 
 	// debug->logging
 	MAINFRAME_MENU_ID_DEBUG_LOGGING0 = 21500,
@@ -212,6 +215,7 @@ EVT_MENU(MAINFRAME_MENU_ID_DEBUG_DUMP_CURL_REQUESTS, MainWindow::OnDebugSetting)
 EVT_MENU(MAINFRAME_MENU_ID_DEBUG_RENDER_UPSIDE_DOWN, MainWindow::OnDebugSetting)
 EVT_MENU(MAINFRAME_MENU_ID_DEBUG_AUDIO_AUX_ONLY, MainWindow::OnDebugSetting)
 EVT_MENU(MAINFRAME_MENU_ID_DEBUG_VK_ACCURATE_BARRIERS, MainWindow::OnDebugSetting)
+EVT_MENU(MAINFRAME_MENU_ID_DEBUG_GPU_CAPTURE, MainWindow::OnDebugSetting)
 EVT_MENU(MAINFRAME_MENU_ID_DEBUG_DUMP_RAM, MainWindow::OnDebugSetting)
 EVT_MENU(MAINFRAME_MENU_ID_DEBUG_DUMP_FST, MainWindow::OnDebugSetting)
 // debug -> View ...
@@ -484,20 +488,20 @@ bool MainWindow::FileLoad(const fs::path launchPath, wxLaunchGameEvent::INITIATE
 			wxMessageBox(t, _("Error"), wxOK | wxCENTRE | wxICON_ERROR);
 			return false;
 		}
-		CafeSystem::STATUS_CODE r = CafeSystem::PrepareForegroundTitle(baseTitleId);
-		if (r == CafeSystem::STATUS_CODE::INVALID_RPX)
+		CafeSystem::PREPARE_STATUS_CODE r = CafeSystem::PrepareForegroundTitle(baseTitleId);
+		if (r == CafeSystem::PREPARE_STATUS_CODE::INVALID_RPX)
 		{
 			cemu_assert_debug(false);
 			return false;
 		}
-		else if (r == CafeSystem::STATUS_CODE::UNABLE_TO_MOUNT)
+		else if (r == CafeSystem::PREPARE_STATUS_CODE::UNABLE_TO_MOUNT)
 		{
 			wxString t = _("Unable to mount title.\nMake sure the configured game paths are still valid and refresh the game list.\n\nFile which failed to load:\n");
 			t.append(_pathToUtf8(launchPath));
 			wxMessageBox(t, _("Error"), wxOK | wxCENTRE | wxICON_ERROR);
 			return false;
 		}
-		else if (r != CafeSystem::STATUS_CODE::SUCCESS)
+		else if (r != CafeSystem::PREPARE_STATUS_CODE::SUCCESS)
 		{
 			wxString t = _("Failed to launch game.");
 			t.append(_pathToUtf8(launchPath));
@@ -512,8 +516,8 @@ bool MainWindow::FileLoad(const fs::path launchPath, wxLaunchGameEvent::INITIATE
 		CafeTitleFileType fileType = DetermineCafeSystemFileType(launchPath);
 		if (fileType == CafeTitleFileType::RPX || fileType == CafeTitleFileType::ELF)
 		{
-			CafeSystem::STATUS_CODE r = CafeSystem::PrepareForegroundTitleFromStandaloneRPX(launchPath);
-			if (r != CafeSystem::STATUS_CODE::SUCCESS)
+			CafeSystem::PREPARE_STATUS_CODE r = CafeSystem::PrepareForegroundTitleFromStandaloneRPX(launchPath);
+			if (r != CafeSystem::PREPARE_STATUS_CODE::SUCCESS)
 			{
 				cemu_assert_debug(false); // todo
 				wxString t = _("Failed to launch executable. Path: ");
@@ -1007,6 +1011,14 @@ void MainWindow::OnDebugSetting(wxCommandEvent& event)
 		if(!GetConfig().vk_accurate_barriers)
 			wxMessageBox(_("Warning: Disabling the accurate barriers option will lead to flickering graphics but may improve performance. It is highly recommended to leave it turned on."), _("Accurate barriers are off"), wxOK);
 	}
+	else if (event.GetId() == MAINFRAME_MENU_ID_DEBUG_GPU_CAPTURE)
+    {
+        cemu_assert_debug(g_renderer->GetType() == RendererAPI::Metal);
+
+#if ENABLE_METAL
+        static_cast<MetalRenderer*>(g_renderer.get())->CaptureFrame();
+#endif
+    }
 	else if (event.GetId() == MAINFRAME_MENU_ID_DEBUG_AUDIO_AUX_ONLY)
 		ActiveSettings::EnableAudioOnlyAux(event.IsChecked());
 	else if (event.GetId() == MAINFRAME_MENU_ID_DEBUG_DUMP_RAM)
@@ -1570,8 +1582,10 @@ void MainWindow::CreateCanvas()
 		m_render_canvas = new VulkanCanvas(m_game_panel, wxSize(1280, 720), true);
 	else if (ActiveSettings::GetGraphicsAPI() == kOpenGL)
 		m_render_canvas = GLCanvas_Create(m_game_panel, wxSize(1280, 720), true);
+#if ENABLE_METAL
 	else
 	    m_render_canvas = new MetalCanvas(m_game_panel, wxSize(1280, 720), true);
+#endif
 
 	// mouse events
 	m_render_canvas->Bind(wxEVT_MOTION, &MainWindow::OnMouseMove, this);
@@ -2230,7 +2244,6 @@ void MainWindow::RecreateMenu()
 	debugLoggingMenu->AppendSeparator();
 	debugLoggingMenu->AppendCheckItem(MAINFRAME_MENU_ID_DEBUG_LOGGING0 + stdx::to_underlying(LogType::OpenGLLogging), _("&OpenGL debug output"), wxEmptyString)->Check(cemuLog_isLoggingEnabled(LogType::OpenGLLogging));
 	debugLoggingMenu->AppendCheckItem(MAINFRAME_MENU_ID_DEBUG_LOGGING0 + stdx::to_underlying(LogType::VulkanValidation), _("&Vulkan validation layer (slow)"), wxEmptyString)->Check(cemuLog_isLoggingEnabled(LogType::VulkanValidation));
-	debugLoggingMenu->AppendCheckItem(MAINFRAME_MENU_ID_DEBUG_LOGGING0 + stdx::to_underlying(LogType::MetalLogging), _("&Metal debug output"), wxEmptyString)->Check(cemuLog_isLoggingEnabled(LogType::MetalLogging));
 	debugLoggingMenu->AppendCheckItem(MAINFRAME_MENU_ID_DEBUG_ADVANCED_PPC_INFO, _("&Log PPC context for API"), wxEmptyString)->Check(cemuLog_advancedPPCLoggingEnabled());
 	m_loggingSubmenu = debugLoggingMenu;
 	// debug->dump submenu
@@ -2252,6 +2265,9 @@ void MainWindow::RecreateMenu()
 
 	auto accurateBarriers = debugMenu->AppendCheckItem(MAINFRAME_MENU_ID_DEBUG_VK_ACCURATE_BARRIERS, _("&Accurate barriers (Vulkan)"), wxEmptyString);
 	accurateBarriers->Check(GetConfig().vk_accurate_barriers);
+
+    auto gpuCapture = debugMenu->Append(MAINFRAME_MENU_ID_DEBUG_GPU_CAPTURE, _("&GPU capture (Metal)"));
+    gpuCapture->Enable(m_game_launched && g_renderer->GetType() == RendererAPI::Metal);
 
 	debugMenu->AppendSeparator();
 
@@ -2300,7 +2316,6 @@ void MainWindow::RecreateMenu()
 		// these options cant be toggled after the renderer backend is initialized:
 		m_loggingSubmenu->Enable(MAINFRAME_MENU_ID_DEBUG_LOGGING0 + stdx::to_underlying(LogType::OpenGLLogging), false);
 		m_loggingSubmenu->Enable(MAINFRAME_MENU_ID_DEBUG_LOGGING0 + stdx::to_underlying(LogType::VulkanValidation), false);
-		m_loggingSubmenu->Enable(MAINFRAME_MENU_ID_DEBUG_LOGGING0 + stdx::to_underlying(LogType::MetalLogging), false);
 
 		UpdateNFCMenu();
 	}

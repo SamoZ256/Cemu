@@ -8,6 +8,7 @@
 #include <wx/wupdlock.h>
 #include <wx/slider.h>
 
+#include "config/CemuConfig.h"
 #include "gui/helpers/wxHelpers.h"
 #include "input/InputManager.h"
 
@@ -113,7 +114,7 @@ GameProfileWindow::GameProfileWindow(wxWindow* parent, uint64_t title_id)
 		first_row->Add(new wxStaticText(panel, wxID_ANY, _("Graphics API")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
 
 		wxString gapi_values[] = { "", "OpenGL", "Vulkan",
-#ifdef __APPLE__
+#if ENABLE_METAL
             "Metal"
 #endif
 		};
@@ -126,6 +127,27 @@ GameProfileWindow::GameProfileWindow(wxWindow* parent, uint64_t title_id)
 		m_shader_mul_accuracy = new wxChoice(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, (int)std::size(mul_values), mul_values);
 		m_shader_mul_accuracy->SetToolTip(_("EXPERT OPTION\nControls the accuracy of floating point multiplication in shaders.\n\nRecommended: true"));
 		first_row->Add(m_shader_mul_accuracy, 0, wxALL, 5);
+
+		first_row->Add(new wxStaticText(panel, wxID_ANY, _("Fast math")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+
+		wxString math_values[] = { _("false"), _("true") };
+		m_fast_math = new wxChoice(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, (int)std::size(math_values), math_values);
+		m_fast_math->SetToolTip(_("Enables fast math for all shaders. May (rarely) cause graphical bugs.\n\nMetal only\n\nRecommended: true"));
+		first_row->Add(m_fast_math, 0, wxALL, 5);
+
+		first_row->Add(new wxStaticText(panel, wxID_ANY, _("Buffer cache mode")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+
+		wxString cache_values[] = { _("device private"), _("device shared"), _("host") };
+		m_buffer_cache_mode = new wxChoice(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, (int)std::size(cache_values), cache_values);
+		m_buffer_cache_mode->SetToolTip(_("EXPERT OPTION\nDecides how the buffer cache memory will be managed.\n\nMetal only\n\nRecommended: device private"));
+		first_row->Add(m_buffer_cache_mode, 0, wxALL, 5);
+
+		first_row->Add(new wxStaticText(panel, wxID_ANY, _("Position invariance")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+
+		wxString pos_values[] = { _("false"), _("true") };
+		m_position_invariance = new wxChoice(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, (int)std::size(pos_values), pos_values);
+		m_position_invariance->SetToolTip(_("Disables most optimizations for vertex positions. May fix polygon cutouts in some games.\n\nMetal only\n\nRecommended: false"));
+		first_row->Add(m_position_invariance, 0, wxALL, 5);
 
 		/*first_row->Add(new wxStaticText(panel, wxID_ANY, _("GPU buffer cache accuracy")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
 		wxString accuarcy_values[] = { _("high"), _("medium"), _("low") };
@@ -271,8 +293,11 @@ void GameProfileWindow::ApplyProfile()
 	if (!m_game_profile.m_graphics_api.has_value())
 		m_graphic_api->SetSelection(0); // selecting ""
 	else
-		m_graphic_api->SetSelection(1 + m_game_profile.m_graphics_api.value()); // "", OpenGL, Vulkan
+		m_graphic_api->SetSelection(1 + m_game_profile.m_graphics_api.value()); // "", OpenGL, Vulkan, Metal
 	m_shader_mul_accuracy->SetSelection((int)m_game_profile.m_accurateShaderMul);
+	m_fast_math->SetSelection((int)m_game_profile.m_fastMath);
+	m_buffer_cache_mode->SetSelection((int)m_game_profile.m_bufferCacheMode);
+	m_position_invariance->SetSelection((int)m_game_profile.m_positionInvariance);
 
 	//// audio
 	//m_disable_audio->Set3StateValue(GetCheckboxState(m_game_profile.disableAudio));
@@ -332,13 +357,16 @@ void GameProfileWindow::SaveProfile()
 
 	// gpu
 	m_game_profile.m_accurateShaderMul = (AccurateShaderMulOption)m_shader_mul_accuracy->GetSelection();
+	m_game_profile.m_fastMath = (bool)m_fast_math->GetSelection();
+	m_game_profile.m_bufferCacheMode = (BufferCacheMode)m_buffer_cache_mode->GetSelection();
+	m_game_profile.m_positionInvariance = (bool)m_position_invariance->GetSelection();
 	if (m_game_profile.m_accurateShaderMul != AccurateShaderMulOption::False && m_game_profile.m_accurateShaderMul != AccurateShaderMulOption::True)
 		m_game_profile.m_accurateShaderMul = AccurateShaderMulOption::True; // force a legal value
 
 	if (m_graphic_api->GetSelection() == 0)
 		m_game_profile.m_graphics_api = {};
 	else
-		m_game_profile.m_graphics_api = (GraphicAPI)(m_graphic_api->GetSelection() - 1);  // "", OpenGL, Vulkan
+		m_game_profile.m_graphics_api = (GraphicAPI)(m_graphic_api->GetSelection() - 1);  // "", OpenGL, Vulkan, Metal
 
 	// controller
 	for (int i = 0; i < 8; ++i)

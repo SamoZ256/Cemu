@@ -124,6 +124,14 @@ enum class AccurateShaderMulOption
 };
 ENABLE_ENUM_ITERATORS(AccurateShaderMulOption, AccurateShaderMulOption::False, AccurateShaderMulOption::True);
 
+enum class BufferCacheMode
+{
+    DevicePrivate,
+    DeviceShared,
+    Host,
+};
+ENABLE_ENUM_ITERATORS(BufferCacheMode, BufferCacheMode::DevicePrivate, BufferCacheMode::Host);
+
 enum class CPUMode
 {
 	SinglecoreInterpreter = 0,
@@ -195,7 +203,7 @@ ENABLE_ENUM_ITERATORS(CrashDump, CrashDump::Disabled, CrashDump::Enabled);
 template <>
 struct fmt::formatter<PrecompiledShaderOption> : formatter<string_view> {
 	template <typename FormatContext>
-	auto format(const PrecompiledShaderOption c, FormatContext &ctx) {
+	auto format(const PrecompiledShaderOption c, FormatContext &ctx) const {
 		string_view name;
 		switch (c)
 		{
@@ -210,7 +218,7 @@ struct fmt::formatter<PrecompiledShaderOption> : formatter<string_view> {
 template <>
 struct fmt::formatter<AccurateShaderMulOption> : formatter<string_view> {
 	template <typename FormatContext>
-	auto format(const AccurateShaderMulOption c, FormatContext &ctx) {
+	auto format(const AccurateShaderMulOption c, FormatContext &ctx) const {
 		string_view name;
 		switch (c)
 		{
@@ -222,9 +230,24 @@ struct fmt::formatter<AccurateShaderMulOption> : formatter<string_view> {
 	}
 };
 template <>
+struct fmt::formatter<BufferCacheMode> : formatter<string_view> {
+	template <typename FormatContext>
+	auto format(const BufferCacheMode c, FormatContext &ctx) const {
+		string_view name;
+		switch (c)
+		{
+		case BufferCacheMode::DevicePrivate: name = "device private"; break;
+		case BufferCacheMode::DeviceShared: name = "device shared"; break;
+		case BufferCacheMode::Host: name = "host"; break;
+		default: name = "unknown"; break;
+		}
+		return formatter<string_view>::format(name, ctx);
+	}
+};
+template <>
 struct fmt::formatter<CPUMode> : formatter<string_view> {
 	template <typename FormatContext>
-	auto format(const CPUMode c, FormatContext &ctx) {
+	auto format(const CPUMode c, FormatContext &ctx) const {
 		string_view name;
 		switch (c)
 		{
@@ -241,7 +264,7 @@ struct fmt::formatter<CPUMode> : formatter<string_view> {
 template <>
 struct fmt::formatter<CPUModeLegacy> : formatter<string_view> {
 	template <typename FormatContext>
-	auto format(const CPUModeLegacy c, FormatContext &ctx) {
+	auto format(const CPUModeLegacy c, FormatContext &ctx) const {
 		string_view name;
 		switch (c)
 		{
@@ -258,7 +281,7 @@ struct fmt::formatter<CPUModeLegacy> : formatter<string_view> {
 template <>
 struct fmt::formatter<CafeConsoleRegion> : formatter<string_view> {
 	template <typename FormatContext>
-	auto format(const CafeConsoleRegion v, FormatContext &ctx) {
+	auto format(const CafeConsoleRegion v, FormatContext &ctx) const {
 		string_view name;
 		switch (v)
 		{
@@ -439,8 +462,9 @@ struct CemuConfig
 
 	// graphics
 	ConfigValue<GraphicAPI> graphic_api{ kVulkan };
-	std::array<uint8, 16> graphic_device_uuid;
-	ConfigValue<int> vsync{ 0 }; // 0 = off, 1+ = on depending on render backend
+	std::array<uint8, 16> vk_graphic_device_uuid;
+	uint64 mtl_graphic_device_uuid{0};
+	ConfigValue<int> vsync{ 0 }; // 0 = off, 1+ = depending on render backend
 	ConfigValue<bool> gx2drawdone_sync {true};
 	ConfigValue<bool> render_upside_down{ false };
 	ConfigValue<bool> async_compile{ true };
@@ -502,6 +526,7 @@ struct CemuConfig
 	// debug
 	ConfigValueBounds<CrashDump> crash_dump{ CrashDump::Disabled };
 	ConfigValue<uint16> gdb_port{ 1337 };
+	ConfigValue<std::string> gpu_capture_dir{};
 
 	void Load(XMLConfigParser& parser);
 	void Save(XMLConfigParser& parser);
@@ -522,6 +547,7 @@ struct CemuConfig
 	{
 		ConfigValue<bool> emulate_skylander_portal{false};
 		ConfigValue<bool> emulate_infinity_base{false};
+		ConfigValue<bool> emulate_dimensions_toypad{false};
 	}emulated_usb_devices{};
 
 	private:

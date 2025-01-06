@@ -2,6 +2,7 @@
 #include "Cafe/HW/Latte/Renderer/Metal/LatteTextureMtl.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
+#include "Metal/MTLTexture.hpp"
 
 uint32 LatteTextureMtl_AdjustTextureCompSel(Latte::E_GX2SURFFMT format, uint32 compSel)
 {
@@ -158,20 +159,19 @@ MTL::Texture* LatteTextureViewMtl::CreateSwizzledView(uint32 gpuSamplerSwizzle)
 
     uint32 baseLevel = firstMip;
     uint32 levelCount = this->numMip;
-    uint32 baseLayer;
-    uint32 layerCount;
+    uint32 baseLayer = 0;
+    uint32 layerCount = 1;
     // TODO: check if base texture is 3D texture as well
     if (textureType == MTL::TextureType3D)
     {
         cemu_assert_debug(firstMip == 0);
         cemu_assert_debug(this->numSlice == baseTexture->depth);
-        baseLayer = 0;
-        layerCount = 1;
     }
     else
     {
         baseLayer = firstSlice;
-        layerCount = this->numSlice;
+        if (textureType == MTL::TextureTypeCubeArray || textureType == MTL::TextureType2DArray)
+            layerCount = this->numSlice;
     }
 
     MTL::TextureSwizzleChannels swizzle;
@@ -180,7 +180,11 @@ MTL::Texture* LatteTextureViewMtl::CreateSwizzledView(uint32 gpuSamplerSwizzle)
     swizzle.blue = GetMtlTextureSwizzle(compSelB);
     swizzle.alpha = GetMtlTextureSwizzle(compSelA);
 
-    auto pixelFormat = GetMtlPixelFormat(format, m_baseTexture->IsDepth(), m_mtlr->GetPixelFormatSupport());
+    // Clamp mip levels
+    levelCount = std::min(levelCount, m_baseTexture->maxPossibleMipLevels - baseLevel);
+    levelCount = std::max(levelCount, (uint32)1);
+
+    auto pixelFormat = GetMtlPixelFormat(format, m_baseTexture->IsDepth());
     MTL::Texture* texture = m_baseTexture->GetTexture()->newTextureView(pixelFormat, textureType, NS::Range::Make(baseLevel, levelCount), NS::Range::Make(baseLayer, layerCount), swizzle);
 
     return texture;

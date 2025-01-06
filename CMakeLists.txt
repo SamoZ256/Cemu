@@ -1,8 +1,5 @@
 cmake_minimum_required(VERSION 3.21.1)
 
-# TODO: remove this
-set(CMAKE_CXX_FLAGS_DEBUG "-g")
-
 option(ENABLE_VCPKG "Enable the vcpkg package manager" ON)
 option(MACOS_BUNDLE "The executable when built on macOS will be created as an application bundle" OFF)
 
@@ -101,13 +98,23 @@ endif()
 if (UNIX AND NOT APPLE)
 	option(ENABLE_WAYLAND "Build with Wayland support" ON)
 	option(ENABLE_FERAL_GAMEMODE "Enables Feral Interactive GameMode Support" ON)
+	option(ENABLE_BLUEZ "Build with Bluez support" ON)
+endif()
+
+if (APPLE)
+    set(ENABLE_METAL_DEFAULT ON)
+else()
+    set(ENABLE_METAL_DEFAULT OFF)
 endif()
 
 option(ENABLE_OPENGL "Enables the OpenGL backend" ON)
 option(ENABLE_VULKAN "Enables the Vulkan backend" ON)
-option(ENABLE_METAL "Enables the Metal backend" ON)
+option(ENABLE_METAL "Enables the Metal backend" ${ENABLE_METAL_DEFAULT})
 option(ENABLE_DISCORD_RPC "Enables the Discord Rich Presence feature" ON)
 
+if (ENABLE_METAL AND NOT APPLE)
+    message(FATAL_ERROR "Metal backend is only supported on Apple platforms")
+endif()
 
 # input backends
 if (WIN32)
@@ -183,6 +190,12 @@ if (UNIX AND NOT APPLE)
 	endif()
 	find_package(GTK3 REQUIRED)
 
+	if(ENABLE_BLUEZ)
+		find_package(bluez REQUIRED)
+		set(ENABLE_WIIMOTE ON)
+		add_compile_definitions(HAS_BLUEZ)
+	endif()
+
 endif()
 
 if (ENABLE_VULKAN)
@@ -193,9 +206,10 @@ if (ENABLE_OPENGL)
 	find_package(OpenGL REQUIRED)
 endif()
 
-# TODO: handle this differently?
-if (ENABLE_METAL AND APPLE)
+if (ENABLE_METAL)
     include_directories(${CMAKE_SOURCE_DIR}/dependencies/metal-cpp)
+
+    add_definitions(-DENABLE_METAL=1)
 endif()
 
 if (ENABLE_DISCORD_RPC)
@@ -223,15 +237,15 @@ if (ENABLE_WXWIDGETS)
 endif()
 
 if (ENABLE_CUBEB)
-	#if (NOT ENABLE_VCPKG)
-	#find_package(cubeb)
-	#endif()
+	if (NOT ENABLE_VCPKG)
+	    find_package(cubeb)
+	endif()
 	if (NOT cubeb_FOUND)
 		option(BUILD_TESTS "" OFF)
 		option(BUILD_TOOLS "" OFF)
 		option(BUNDLE_SPEEX "" OFF)
 		set(USE_WINMM OFF CACHE BOOL "")
-		add_subdirectory("dependencies/cubeb" EXCLUDE_FROM_ALL)
+		add_subdirectory("dependencies/cubeb" EXCLUDE_FROM_ALL SYSTEM)
 		set_property(TARGET cubeb PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 		add_library(cubeb::cubeb ALIAS cubeb)
 	endif()

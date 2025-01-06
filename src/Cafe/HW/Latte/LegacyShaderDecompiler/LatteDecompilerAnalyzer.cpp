@@ -140,6 +140,8 @@ bool _isIntegerInstruction(const LatteDecompilerALUInstruction& aluInstruction)
 		case ALU_OP2_INST_SUB_INT:
 		case ALU_OP2_INST_MAX_INT:
 		case ALU_OP2_INST_MIN_INT:
+		case ALU_OP2_INST_MAX_UINT:
+		case ALU_OP2_INST_MIN_UINT:
 		case ALU_OP2_INST_SETE_INT:
 		case ALU_OP2_INST_SETGT_INT:
 		case ALU_OP2_INST_SETGE_INT:
@@ -546,6 +548,13 @@ namespace LatteDecompiler
 			(decompilerContext->shaderType == LatteConst::ShaderType::Geometry))
 		{
 			decompilerContext->hasUniformVarBlock = true; // uf_verticesPerInstance and uf_streamoutBufferBase*
+		}
+		if (g_renderer->GetType() == RendererAPI::Metal)
+		{
+            bool isRectVertexShader = (static_cast<LattePrimitiveMode>(decompilerContext->contextRegisters[mmVGT_PRIMITIVE_TYPE]) == LattePrimitiveMode::RECTS);
+
+		    if (decompilerContext->shaderType == LatteConst::ShaderType::Vertex && (decompilerContext->options->usesGeometryShader || isRectVertexShader))
+				decompilerContext->hasUniformVarBlock = true; // uf_verticesPerInstance
 		}
 	}
 
@@ -1019,6 +1028,7 @@ void LatteDecompiler_analyze(LatteDecompilerShaderContext* shaderContext, LatteD
 	LatteDecompiler::_initTextureBindingPointsMTL(shaderContext);
 	LatteDecompiler::_initUniformBindingPoints(shaderContext);
 	LatteDecompiler::_initAttributeBindingPoints(shaderContext);
+	shaderContext->output->resourceMappingMTL.verticesPerInstanceBinding = shaderContext->currentBufferBindingPointMTL++;
 	shaderContext->output->resourceMappingMTL.indexBufferBinding = shaderContext->currentBufferBindingPointMTL++;
 	shaderContext->output->resourceMappingMTL.indexTypeBinding = shaderContext->currentBufferBindingPointMTL++;
 }

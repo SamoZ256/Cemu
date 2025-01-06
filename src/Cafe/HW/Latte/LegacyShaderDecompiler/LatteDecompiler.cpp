@@ -370,6 +370,8 @@ bool LatteDecompiler_IsALUTransInstruction(bool isOP3, uint32 opcode)
 		opcode == ALU_OP2_INST_LSHR_INT ||
 		opcode == ALU_OP2_INST_MAX_INT ||
 		opcode == ALU_OP2_INST_MIN_INT ||
+		opcode == ALU_OP2_INST_MAX_UINT ||
+		opcode == ALU_OP2_INST_MIN_UINT ||
 		opcode == ALU_OP2_INST_MOVA_FLOOR ||
 		opcode == ALU_OP2_INST_MOVA_INT ||
 		opcode == ALU_OP2_INST_SETE_DX10 ||
@@ -1067,10 +1069,12 @@ void _LatteDecompiler_Process(LatteDecompilerShaderContext* shaderContext, uint8
 	// emit code
 	if (shaderContext->shader->hasError == false)
 	{
-	    if (g_renderer->GetType() == RendererAPI::Metal)
-			LatteDecompiler_emitMSLShader(shaderContext, shaderContext->shader);
+	    if (g_renderer->GetType() == RendererAPI::OpenGL || g_renderer->GetType() == RendererAPI::Vulkan)
+	        LatteDecompiler_emitGLSLShader(shaderContext, shaderContext->shader);
+#if ENABLE_METAL
 		else
-		    LatteDecompiler_emitGLSLShader(shaderContext, shaderContext->shader);
+		    LatteDecompiler_emitMSLShader(shaderContext, shaderContext->shader);
+#endif
 	}
 	LatteDecompiler_cleanup(shaderContext);
 	// fast access

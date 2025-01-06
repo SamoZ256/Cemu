@@ -4,20 +4,30 @@
 #include "HW/Latte/Renderer/Metal/CachedFBOMtl.h"
 #include "HW/Latte/Renderer/Metal/MetalRenderer.h"
 #include "util/helpers/ConcurrentQueue.h"
+#include "util/helpers/Semaphore.h"
 
 #include <Metal/Metal.hpp>
 
 class RendererShaderMtl : public RendererShader
 {
-	//enum class COMPILATION_STATE : uint32
-	//{
-	//	NONE,
-	//	QUEUED,
-	//	COMPILING,
-	//	DONE
-	//};
+    friend class ShaderMtlThreadPool;
+
+	enum class COMPILATION_STATE : uint32
+	{
+		NONE,
+		QUEUED,
+		COMPILING,
+		DONE
+	};
 
 public:
+    static void ShaderCacheLoading_begin(uint64 cacheTitleId);
+    static void ShaderCacheLoading_end();
+    static void ShaderCacheLoading_Close();
+
+    static void Initialize();
+	static void Shutdown();
+
     static void FinalizeGlslangIfNeeded();
 
 	RendererShaderMtl(class MetalRenderer* mtlRenderer, ShaderType type, uint64 baseHash, uint64 auxHash, bool isGameShader, bool isGfxPackShader, const std::string& mslCode);
@@ -44,10 +54,9 @@ public:
 	    cemu_assert_suspicious();
 	}
 
-	// TODO: implement this
-	void PreponeCompilation(bool isRenderThread) override {}
-	bool IsCompiled() override { return true; }
-	bool WaitForCompiled() override { return true; }
+	void PreponeCompilation(bool isRenderThread) override;
+	bool IsCompiled() override;
+	bool WaitForCompiled() override;
 
 private:
     static bool s_glslangInitialized;
@@ -56,5 +65,15 @@ private:
 
 	MTL::Function* m_function = nullptr;
 
+	StateSemaphore<COMPILATION_STATE> m_compilationState{ COMPILATION_STATE::NONE };
+
+	std::string m_mslCode;
+
+	bool ShouldCountCompilation() const;
+
+	void CompileInternal();
+
+	void FinishCompilation();
+  
 	std::string TranslateGlslToMsl(const std::string& glslCode);
 };

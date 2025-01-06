@@ -1,17 +1,15 @@
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
 #include "Cemu/Logging/CemuLogging.h"
-#include "Common/precompiled.h"
-#include "Metal/MTLDepthStencil.hpp"
-#include "Metal/MTLPixelFormat.hpp"
-#include "Metal/MTLRenderCommandEncoder.hpp"
-#include "Metal/MTLRenderPipeline.hpp"
-#include "Metal/MTLSampler.hpp"
+#include "HW/Latte/Core/LatteTextureLoader.h"
+#include "HW/Latte/Renderer/Metal/MetalCommon.h"
 
 std::map<Latte::E_GX2SURFFMT, MetalPixelFormatInfo> MTL_COLOR_FORMAT_TABLE = {
-	{Latte::E_GX2SURFFMT::R4_G4_UNORM, {MTL::PixelFormatRG8Unorm, MetalDataType::FLOAT, 2}}, // TODO: correct?
-	{Latte::E_GX2SURFFMT::R5_G6_B5_UNORM, {MTL::PixelFormatB5G6R5Unorm, MetalDataType::FLOAT, 2}}, // TODO: correct?
-	{Latte::E_GX2SURFFMT::R5_G5_B5_A1_UNORM, {MTL::PixelFormatBGR5A1Unorm, MetalDataType::FLOAT, 2}}, // TODO: correct?
-	{Latte::E_GX2SURFFMT::R4_G4_B4_A4_UNORM, {MTL::PixelFormatABGR4Unorm, MetalDataType::FLOAT, 2}}, // TODO: correct?
+    {Latte::E_GX2SURFFMT::INVALID_FORMAT, {MTL::PixelFormatInvalid, MetalDataType::NONE, 0}},
+
+	{Latte::E_GX2SURFFMT::R4_G4_UNORM, {MTL::PixelFormatABGR4Unorm, MetalDataType::FLOAT, 2}},
+	{Latte::E_GX2SURFFMT::R5_G6_B5_UNORM, {MTL::PixelFormatB5G6R5Unorm, MetalDataType::FLOAT, 2}},
+	{Latte::E_GX2SURFFMT::R5_G5_B5_A1_UNORM, {MTL::PixelFormatBGR5A1Unorm, MetalDataType::FLOAT, 2}},
+	{Latte::E_GX2SURFFMT::R4_G4_B4_A4_UNORM, {MTL::PixelFormatABGR4Unorm, MetalDataType::FLOAT, 2}},
 	{Latte::E_GX2SURFFMT::A1_B5_G5_R5_UNORM, {MTL::PixelFormatA1BGR5Unorm, MetalDataType::FLOAT, 2}},
 	{Latte::E_GX2SURFFMT::R8_UNORM, {MTL::PixelFormatR8Unorm, MetalDataType::FLOAT, 1}},
 	{Latte::E_GX2SURFFMT::R8_SNORM, {MTL::PixelFormatR8Snorm, MetalDataType::FLOAT, 1}},
@@ -27,12 +25,12 @@ std::map<Latte::E_GX2SURFFMT, MetalPixelFormatInfo> MTL_COLOR_FORMAT_TABLE = {
 	{Latte::E_GX2SURFFMT::R8_G8_B8_A8_SINT, {MTL::PixelFormatRGBA8Sint, MetalDataType::INT, 4}},
 	{Latte::E_GX2SURFFMT::R8_G8_B8_A8_SRGB, {MTL::PixelFormatRGBA8Unorm_sRGB, MetalDataType::FLOAT, 4}},
 	{Latte::E_GX2SURFFMT::R10_G10_B10_A2_UNORM, {MTL::PixelFormatRGB10A2Unorm, MetalDataType::FLOAT, 4}},
-	{Latte::E_GX2SURFFMT::R10_G10_B10_A2_SNORM, {MTL::PixelFormatRGBA16Snorm, MetalDataType::FLOAT, 8}}, // TODO: correct?
+	{Latte::E_GX2SURFFMT::R10_G10_B10_A2_SNORM, {MTL::PixelFormatRGBA16Snorm, MetalDataType::FLOAT, 8}},
 	{Latte::E_GX2SURFFMT::R10_G10_B10_A2_UINT, {MTL::PixelFormatRGB10A2Uint, MetalDataType::UINT, 4}},
-	{Latte::E_GX2SURFFMT::R10_G10_B10_A2_SINT, {MTL::PixelFormatRGBA16Sint, MetalDataType::INT, 8}}, // TODO: correct?
+	{Latte::E_GX2SURFFMT::R10_G10_B10_A2_SINT, {MTL::PixelFormatRGBA16Sint, MetalDataType::INT, 8}},
 	{Latte::E_GX2SURFFMT::R10_G10_B10_A2_SRGB, {MTL::PixelFormatRGB10A2Unorm, MetalDataType::FLOAT, 4}}, // TODO: sRGB?
-	{Latte::E_GX2SURFFMT::A2_B10_G10_R10_UNORM, {MTL::PixelFormatBGR10A2Unorm, MetalDataType::FLOAT, 4}}, // TODO: correct?
-	{Latte::E_GX2SURFFMT::A2_B10_G10_R10_UINT, {MTL::PixelFormatRGB10A2Uint, MetalDataType::UINT, 4}}, // TODO: correct?
+	{Latte::E_GX2SURFFMT::A2_B10_G10_R10_UNORM, {MTL::PixelFormatBGR10A2Unorm, MetalDataType::FLOAT, 4}},
+	{Latte::E_GX2SURFFMT::A2_B10_G10_R10_UINT, {MTL::PixelFormatRGB10A2Uint, MetalDataType::UINT, 4}},
 	{Latte::E_GX2SURFFMT::R16_UNORM, {MTL::PixelFormatR16Unorm, MetalDataType::FLOAT, 2}},
 	{Latte::E_GX2SURFFMT::R16_SNORM, {MTL::PixelFormatR16Snorm, MetalDataType::FLOAT, 2}},
 	{Latte::E_GX2SURFFMT::R16_UINT, {MTL::PixelFormatR16Uint, MetalDataType::UINT, 2}},
@@ -48,11 +46,11 @@ std::map<Latte::E_GX2SURFFMT, MetalPixelFormatInfo> MTL_COLOR_FORMAT_TABLE = {
 	{Latte::E_GX2SURFFMT::R16_G16_B16_A16_UINT, {MTL::PixelFormatRGBA16Uint, MetalDataType::UINT, 8}},
 	{Latte::E_GX2SURFFMT::R16_G16_B16_A16_SINT, {MTL::PixelFormatRGBA16Sint, MetalDataType::INT, 8}},
 	{Latte::E_GX2SURFFMT::R16_G16_B16_A16_FLOAT, {MTL::PixelFormatRGBA16Float, MetalDataType::FLOAT, 8}},
-	{Latte::E_GX2SURFFMT::R24_X8_UNORM, {MTL::PixelFormatR32Float, MetalDataType::FLOAT, 0}}, // TODO
-	{Latte::E_GX2SURFFMT::R24_X8_FLOAT, {MTL::PixelFormatInvalid, MetalDataType::NONE, 0}}, // TODO
+	{Latte::E_GX2SURFFMT::R24_X8_UNORM, {MTL::PixelFormatR32Float, MetalDataType::FLOAT, 4}}, // TODO: correct?
+	{Latte::E_GX2SURFFMT::R24_X8_FLOAT, {MTL::PixelFormatR32Float, MetalDataType::FLOAT, 4}}, // TODO: correct?
 	{Latte::E_GX2SURFFMT::X24_G8_UINT, {MTL::PixelFormatRGBA8Uint, MetalDataType::UINT, 4}}, // TODO: correct?
 	{Latte::E_GX2SURFFMT::R32_X8_FLOAT, {MTL::PixelFormatR32Float, MetalDataType::FLOAT, 4}}, // TODO: correct?
-	{Latte::E_GX2SURFFMT::X32_G8_UINT_X24, {MTL::PixelFormatInvalid, MetalDataType::NONE, 0}}, // TODO
+	{Latte::E_GX2SURFFMT::X32_G8_UINT_X24, {MTL::PixelFormatRGBA16Uint, MetalDataType::UINT, 8}}, // TODO: correct?
 	{Latte::E_GX2SURFFMT::R11_G11_B10_FLOAT, {MTL::PixelFormatRG11B10Float, MetalDataType::FLOAT, 4}},
 	{Latte::E_GX2SURFFMT::R32_UINT, {MTL::PixelFormatR32Uint, MetalDataType::UINT, 4}},
 	{Latte::E_GX2SURFFMT::R32_SINT, {MTL::PixelFormatR32Sint, MetalDataType::INT, 4}},
@@ -76,6 +74,8 @@ std::map<Latte::E_GX2SURFFMT, MetalPixelFormatInfo> MTL_COLOR_FORMAT_TABLE = {
 };
 
 std::map<Latte::E_GX2SURFFMT, MetalPixelFormatInfo> MTL_DEPTH_FORMAT_TABLE = {
+    {Latte::E_GX2SURFFMT::INVALID_FORMAT, {MTL::PixelFormatInvalid, MetalDataType::NONE, 0}},
+
 	{Latte::E_GX2SURFFMT::D24_S8_UNORM, {MTL::PixelFormatDepth24Unorm_Stencil8, MetalDataType::NONE, 4, {1, 1}, true}},
 	{Latte::E_GX2SURFFMT::D24_S8_FLOAT, {MTL::PixelFormatDepth32Float_Stencil8, MetalDataType::NONE, 4, {1, 1}, true}},
 	{Latte::E_GX2SURFFMT::D32_S8_FLOAT, {MTL::PixelFormatDepth32Float_Stencil8, MetalDataType::NONE, 5, {1, 1}, true}},
@@ -83,52 +83,127 @@ std::map<Latte::E_GX2SURFFMT, MetalPixelFormatInfo> MTL_DEPTH_FORMAT_TABLE = {
 	{Latte::E_GX2SURFFMT::D32_FLOAT, {MTL::PixelFormatDepth32Float, MetalDataType::NONE, 4, {1, 1}}},
 };
 
-const MetalPixelFormatInfo GetMtlPixelFormatInfo(Latte::E_GX2SURFFMT format, bool isDepth)
+// TODO: R10_G10_B10_A2_UINT and R10_G10_B10_A2_SINT
+// TODO: A2_B10_G10_R10_UNORM and A2_B10_G10_R10_UINT
+void CheckForPixelFormatSupport(const MetalPixelFormatSupport& support)
 {
-    if (format == Latte::E_GX2SURFFMT::INVALID_FORMAT)
+    // Texture decoders
+
+    // Color
+    MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R32_G32_B32_A32_FLOAT].textureDecoder =  TextureDecoder_R32_G32_B32_A32_FLOAT::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R32_G32_B32_A32_UINT].textureDecoder = TextureDecoder_R32_G32_B32_A32_UINT::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R16_G16_B16_A16_FLOAT].textureDecoder = TextureDecoder_R16_G16_B16_A16_FLOAT::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R16_G16_B16_A16_UINT].textureDecoder = TextureDecoder_R16_G16_B16_A16_UINT::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R16_G16_B16_A16_UNORM].textureDecoder = TextureDecoder_R16_G16_B16_A16::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R16_G16_B16_A16_SNORM].textureDecoder = TextureDecoder_R16_G16_B16_A16::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R8_G8_B8_A8_UNORM].textureDecoder = TextureDecoder_R8_G8_B8_A8::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R8_G8_B8_A8_SNORM].textureDecoder = TextureDecoder_R8_G8_B8_A8::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R8_G8_B8_A8_SRGB].textureDecoder = TextureDecoder_R8_G8_B8_A8::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R8_G8_B8_A8_UINT].textureDecoder = TextureDecoder_R8_G8_B8_A8::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R8_G8_B8_A8_SINT].textureDecoder = TextureDecoder_R8_G8_B8_A8::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R32_G32_FLOAT].textureDecoder = TextureDecoder_R32_G32_FLOAT::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R32_G32_UINT].textureDecoder = TextureDecoder_R32_G32_UINT::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R16_G16_UNORM].textureDecoder = TextureDecoder_R16_G16::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R16_G16_FLOAT].textureDecoder = TextureDecoder_R16_G16_FLOAT::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R8_G8_UNORM].textureDecoder = TextureDecoder_R8_G8::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R8_G8_SNORM].textureDecoder = TextureDecoder_R8_G8::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R4_G4_UNORM].textureDecoder = TextureDecoder_R4_G4_UNORM_To_ABGR4::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R32_FLOAT].textureDecoder = TextureDecoder_R32_FLOAT::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R32_UINT].textureDecoder = TextureDecoder_R32_UINT::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R16_FLOAT].textureDecoder = TextureDecoder_R16_FLOAT::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R16_UNORM].textureDecoder = TextureDecoder_R16_UNORM::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R16_SNORM].textureDecoder = TextureDecoder_R16_SNORM::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R16_UINT].textureDecoder = TextureDecoder_R16_UINT::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R8_UNORM].textureDecoder = TextureDecoder_R8::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R8_SNORM].textureDecoder = TextureDecoder_R8::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R8_UINT].textureDecoder = TextureDecoder_R8_UINT::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R5_G6_B5_UNORM].textureDecoder = TextureDecoder_R5_G6_B5_swappedRB::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R5_G5_B5_A1_UNORM].textureDecoder = TextureDecoder_R5_G5_B5_A1_UNORM_swappedRB::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::A1_B5_G5_R5_UNORM].textureDecoder = TextureDecoder_A1_B5_G5_R5_UNORM::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R11_G11_B10_FLOAT].textureDecoder = TextureDecoder_R11_G11_B10_FLOAT::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R4_G4_B4_A4_UNORM].textureDecoder = TextureDecoder_R4_G4_B4_A4_UNORM_To_ABGR4::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R10_G10_B10_A2_UNORM].textureDecoder = TextureDecoder_R10_G10_B10_A2_UNORM::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R10_G10_B10_A2_SNORM].textureDecoder = TextureDecoder_R10_G10_B10_A2_SNORM_To_RGBA16::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R10_G10_B10_A2_SRGB].textureDecoder = TextureDecoder_R10_G10_B10_A2_UNORM::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::BC1_SRGB].textureDecoder = TextureDecoder_BC1::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::BC1_UNORM].textureDecoder = TextureDecoder_BC1::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::BC2_UNORM].textureDecoder = TextureDecoder_BC2::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::BC2_SRGB].textureDecoder = TextureDecoder_BC2::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::BC3_UNORM].textureDecoder = TextureDecoder_BC3::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::BC3_SRGB].textureDecoder = TextureDecoder_BC3::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::BC4_UNORM].textureDecoder = TextureDecoder_BC4::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::BC4_SNORM].textureDecoder = TextureDecoder_BC4::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::BC5_UNORM].textureDecoder = TextureDecoder_BC5::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::BC5_SNORM].textureDecoder = TextureDecoder_BC5::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R24_X8_UNORM].textureDecoder = TextureDecoder_R24_X8::getInstance();
+   	MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::X24_G8_UINT].textureDecoder = TextureDecoder_X24_G8_UINT::getInstance();
+
+    if (!support.m_supportsPacked16BitFormats)
     {
-        return {MTL::PixelFormatInvalid, MetalDataType::NONE, 0};
+        // B5G6R5Unorm
+        MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R5_G6_B5_UNORM].pixelFormat = MTL::PixelFormatRGBA8Unorm;
+        MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R5_G6_B5_UNORM].bytesPerBlock = 4;
+        MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R5_G6_B5_UNORM].textureDecoder = TextureDecoder_R5G6B5_UNORM_To_RGBA8::getInstance();
+
+        // A1BGR5Unorm
+        MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::A1_B5_G5_R5_UNORM].pixelFormat = MTL::PixelFormatRGBA8Unorm;
+        MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::A1_B5_G5_R5_UNORM].textureDecoder = TextureDecoder_A1_B5_G5_R5_UNORM_vulkan_To_RGBA8::getInstance();
+
+        // ABGR4Unorm
+        MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R4_G4_UNORM].pixelFormat = MTL::PixelFormatRG8Unorm;
+        MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R4_G4_UNORM].bytesPerBlock = 2;
+        MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R4_G4_UNORM].textureDecoder = TextureDecoder_R4G4_UNORM_To_RG8::getInstance();
+
+        MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R4_G4_B4_A4_UNORM].pixelFormat = MTL::PixelFormatRGBA8Unorm;
+        MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R4_G4_B4_A4_UNORM].bytesPerBlock = 4;
+        MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R4_G4_B4_A4_UNORM].textureDecoder = TextureDecoder_R4G4B4A4_UNORM_To_RGBA8::getInstance();
+
+        // BGR5A1Unorm
+        MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R5_G5_B5_A1_UNORM].pixelFormat = MTL::PixelFormatRGBA8Unorm;
+        MTL_COLOR_FORMAT_TABLE[Latte::E_GX2SURFFMT::R5_G5_B5_A1_UNORM].textureDecoder = TextureDecoder_R5_G5_B5_A1_UNORM_swappedRB_To_RGBA8::getInstance();
     }
 
-    MetalPixelFormatInfo formatInfo;
-    if (isDepth)
-        formatInfo = MTL_DEPTH_FORMAT_TABLE[format];
-    else
-        formatInfo = MTL_COLOR_FORMAT_TABLE[format];
+    // Depth
+   	MTL_DEPTH_FORMAT_TABLE[Latte::E_GX2SURFFMT::D24_S8_UNORM].textureDecoder = TextureDecoder_D24_S8::getInstance();
+   	MTL_DEPTH_FORMAT_TABLE[Latte::E_GX2SURFFMT::D24_S8_FLOAT].textureDecoder = TextureDecoder_NullData64::getInstance(); // TODO: why?
+   	MTL_DEPTH_FORMAT_TABLE[Latte::E_GX2SURFFMT::D32_FLOAT].textureDecoder = TextureDecoder_R32_FLOAT::getInstance();
+   	MTL_DEPTH_FORMAT_TABLE[Latte::E_GX2SURFFMT::D16_UNORM].textureDecoder = TextureDecoder_R16_UNORM::getInstance();
+   	MTL_DEPTH_FORMAT_TABLE[Latte::E_GX2SURFFMT::D32_S8_FLOAT].textureDecoder = TextureDecoder_D32_S8_UINT_X24::getInstance();
 
-    return formatInfo;
+    if (!support.m_supportsDepth24Unorm_Stencil8)
+    {
+        // Depth24Unorm_Stencil8
+        MTL_DEPTH_FORMAT_TABLE[Latte::E_GX2SURFFMT::D24_S8_UNORM].pixelFormat = MTL::PixelFormatDepth32Float_Stencil8;
+        // TODO: implement the decoder
+        //MTL_DEPTH_FORMAT_TABLE[Latte::E_GX2SURFFMT::D24_S8_UNORM].textureDecoder = TextureDecoder_D24_S8_To_D32_S8::getInstance();
+    }
 }
 
-MTL::PixelFormat GetMtlPixelFormat(Latte::E_GX2SURFFMT format, bool isDepth, const MetalPixelFormatSupport& pixelFormatSupport)
+const MetalPixelFormatInfo GetMtlPixelFormatInfo(Latte::E_GX2SURFFMT format, bool isDepth)
+{
+    if (isDepth)
+    {
+        auto it = MTL_DEPTH_FORMAT_TABLE.find(format);
+        if (it == MTL_DEPTH_FORMAT_TABLE.end())
+            return {MTL::PixelFormatDepth16Unorm, MetalDataType::NONE, 2}; // Fallback
+        else
+            return it->second;
+    }
+    else
+    {
+        auto it = MTL_COLOR_FORMAT_TABLE.find(format);
+        if (it == MTL_COLOR_FORMAT_TABLE.end())
+            return {MTL::PixelFormatR8Unorm, MetalDataType::FLOAT, 1}; // Fallback
+        else
+            return it->second;
+    }
+}
+
+MTL::PixelFormat GetMtlPixelFormat(Latte::E_GX2SURFFMT format, bool isDepth)
 {
     auto pixelFormat = GetMtlPixelFormatInfo(format, isDepth).pixelFormat;
     if (pixelFormat == MTL::PixelFormatInvalid)
-        cemuLog_logDebug(LogType::Force, "invalid pixel format {}\n", pixelFormat);
-
-    switch (pixelFormat)
-    {
-    case MTL::PixelFormatR8Unorm_sRGB:
-        if (!pixelFormatSupport.m_supportsR8Unorm_sRGB)
-            return MTL::PixelFormatRGBA8Unorm_sRGB;
-        break;
-    case MTL::PixelFormatRG8Unorm_sRGB:
-        if (!pixelFormatSupport.m_supportsRG8Unorm_sRGB)
-            return MTL::PixelFormatRGBA8Unorm_sRGB;
-        break;
-    case MTL::PixelFormatB5G6R5Unorm:
-    case MTL::PixelFormatA1BGR5Unorm:
-    case MTL::PixelFormatABGR4Unorm:
-    case MTL::PixelFormatBGR5A1Unorm:
-        if (!pixelFormatSupport.m_supportsPacked16BitFormats)
-            return MTL::PixelFormatRGBA8Unorm;
-        break;
-    case MTL::PixelFormatDepth24Unorm_Stencil8:
-        if (!pixelFormatSupport.m_supportsDepth24Unorm_Stencil8)
-            return MTL::PixelFormatDepth32Float_Stencil8;
-        break;
-    default:
-        break;
-    }
+        cemuLog_log(LogType::Force, "invalid pixel format 0x{:x}, is depth: {}\n", format, isDepth);
 
     return pixelFormat;
 }
@@ -151,133 +226,6 @@ size_t GetMtlTextureBytesPerImage(Latte::E_GX2SURFFMT format, bool isDepth, uint
     return CeilDivide(height, formatInfo.blockTexelSize.y) * bytesPerRow;
 }
 
-TextureDecoder* GetMtlTextureDecoder(Latte::E_GX2SURFFMT format, bool isDepth)
-{
-    if (isDepth)
-    {
-    	switch (format)
-    	{
-    	case Latte::E_GX2SURFFMT::D24_S8_UNORM:
-    		return TextureDecoder_D24_S8::getInstance();
-    	case Latte::E_GX2SURFFMT::D24_S8_FLOAT:
-    		return TextureDecoder_NullData64::getInstance();
-    	case Latte::E_GX2SURFFMT::D32_FLOAT:
-    		return TextureDecoder_R32_FLOAT::getInstance();
-    	case Latte::E_GX2SURFFMT::D16_UNORM:
-    		return TextureDecoder_R16_UNORM::getInstance();
-    	case Latte::E_GX2SURFFMT::D32_S8_FLOAT:
-    		return TextureDecoder_D32_S8_UINT_X24::getInstance();
-     	default:
-    		debug_printf("invalid depth texture format %u\n", (uint32)format);
-    		cemu_assert_debug(false);
-    		return nullptr;
-    	}
-    } else
-    {
-        switch (format)
-        {
-    	case Latte::E_GX2SURFFMT::R32_G32_B32_A32_FLOAT:
-    		return TextureDecoder_R32_G32_B32_A32_FLOAT::getInstance();
-    	case Latte::E_GX2SURFFMT::R32_G32_B32_A32_UINT:
-    		return TextureDecoder_R32_G32_B32_A32_UINT::getInstance();
-    	case Latte::E_GX2SURFFMT::R16_G16_B16_A16_FLOAT:
-    		return TextureDecoder_R16_G16_B16_A16_FLOAT::getInstance();
-    	case Latte::E_GX2SURFFMT::R16_G16_B16_A16_UINT:
-    		return TextureDecoder_R16_G16_B16_A16_UINT::getInstance();
-    	case Latte::E_GX2SURFFMT::R16_G16_B16_A16_UNORM:
-    		return TextureDecoder_R16_G16_B16_A16::getInstance();
-    	case Latte::E_GX2SURFFMT::R16_G16_B16_A16_SNORM:
-    		return TextureDecoder_R16_G16_B16_A16::getInstance();
-    	case Latte::E_GX2SURFFMT::R8_G8_B8_A8_UNORM:
-    		return TextureDecoder_R8_G8_B8_A8::getInstance();
-    	case Latte::E_GX2SURFFMT::R8_G8_B8_A8_SNORM:
-    		return TextureDecoder_R8_G8_B8_A8::getInstance();
-    	case Latte::E_GX2SURFFMT::R8_G8_B8_A8_SRGB:
-    		return TextureDecoder_R8_G8_B8_A8::getInstance();
-    	case Latte::E_GX2SURFFMT::R8_G8_B8_A8_UINT:
-    		return TextureDecoder_R8_G8_B8_A8::getInstance();
-    	case Latte::E_GX2SURFFMT::R8_G8_B8_A8_SINT:
-    		return TextureDecoder_R8_G8_B8_A8::getInstance();
-    	case Latte::E_GX2SURFFMT::R32_G32_FLOAT:
-    		return TextureDecoder_R32_G32_FLOAT::getInstance();
-    	case Latte::E_GX2SURFFMT::R32_G32_UINT:
-    		return TextureDecoder_R32_G32_UINT::getInstance();
-    	case Latte::E_GX2SURFFMT::R16_G16_UNORM:
-    		return TextureDecoder_R16_G16::getInstance();
-    	case Latte::E_GX2SURFFMT::R16_G16_FLOAT:
-    		return TextureDecoder_R16_G16_FLOAT::getInstance();
-    	case Latte::E_GX2SURFFMT::R8_G8_UNORM:
-    		return TextureDecoder_R8_G8::getInstance();
-    	case Latte::E_GX2SURFFMT::R8_G8_SNORM:
-    		return TextureDecoder_R8_G8::getInstance();
-    	case Latte::E_GX2SURFFMT::R4_G4_UNORM:
-    		return TextureDecoder_R4_G4::getInstance();
-    	case Latte::E_GX2SURFFMT::R32_FLOAT:
-    		return TextureDecoder_R32_FLOAT::getInstance();
-    	case Latte::E_GX2SURFFMT::R32_UINT:
-    		return TextureDecoder_R32_UINT::getInstance();
-    	case Latte::E_GX2SURFFMT::R16_FLOAT:
-    		return TextureDecoder_R16_FLOAT::getInstance();
-    	case Latte::E_GX2SURFFMT::R16_UNORM:
-    		return TextureDecoder_R16_UNORM::getInstance();
-    	case Latte::E_GX2SURFFMT::R16_SNORM:
-    		return TextureDecoder_R16_SNORM::getInstance();
-    	case Latte::E_GX2SURFFMT::R16_UINT:
-    		return TextureDecoder_R16_UINT::getInstance();
-    	case Latte::E_GX2SURFFMT::R8_UNORM:
-    		return TextureDecoder_R8::getInstance();
-    	case Latte::E_GX2SURFFMT::R8_SNORM:
-    		return TextureDecoder_R8::getInstance();
-    	case Latte::E_GX2SURFFMT::R8_UINT:
-    		return TextureDecoder_R8_UINT::getInstance();
-    	case Latte::E_GX2SURFFMT::R5_G6_B5_UNORM:
-    		return TextureDecoder_R5_G6_B5_swappedRB::getInstance();
-    	case Latte::E_GX2SURFFMT::R5_G5_B5_A1_UNORM:
-    		return TextureDecoder_R5_G5_B5_A1_UNORM_swappedRB::getInstance();
-    	case Latte::E_GX2SURFFMT::A1_B5_G5_R5_UNORM:
-    		return TextureDecoder_A1_B5_G5_R5_UNORM_vulkan::getInstance();
-    	case Latte::E_GX2SURFFMT::R11_G11_B10_FLOAT:
-    		return TextureDecoder_R11_G11_B10_FLOAT::getInstance();
-    	case Latte::E_GX2SURFFMT::R4_G4_B4_A4_UNORM:
-    		return TextureDecoder_R4_G4_B4_A4_UNORM::getInstance();
-    	case Latte::E_GX2SURFFMT::R10_G10_B10_A2_UNORM:
-    		return TextureDecoder_R10_G10_B10_A2_UNORM::getInstance();
-    	case Latte::E_GX2SURFFMT::R10_G10_B10_A2_SNORM:
-    		return TextureDecoder_R10_G10_B10_A2_SNORM_To_RGBA16::getInstance();
-    	case Latte::E_GX2SURFFMT::R10_G10_B10_A2_SRGB:
-    		return TextureDecoder_R10_G10_B10_A2_UNORM::getInstance();
-    	case Latte::E_GX2SURFFMT::BC1_SRGB:
-    		return TextureDecoder_BC1::getInstance();
-    	case Latte::E_GX2SURFFMT::BC1_UNORM:
-    		return TextureDecoder_BC1::getInstance();
-    	case Latte::E_GX2SURFFMT::BC2_UNORM:
-    		return TextureDecoder_BC2::getInstance();
-    	case Latte::E_GX2SURFFMT::BC2_SRGB:
-    		return TextureDecoder_BC2::getInstance();
-    	case Latte::E_GX2SURFFMT::BC3_UNORM:
-    		return TextureDecoder_BC3::getInstance();
-    	case Latte::E_GX2SURFFMT::BC3_SRGB:
-    		return TextureDecoder_BC3::getInstance();
-    	case Latte::E_GX2SURFFMT::BC4_UNORM:
-    		return TextureDecoder_BC4::getInstance();
-    	case Latte::E_GX2SURFFMT::BC4_SNORM:
-    		return TextureDecoder_BC4::getInstance();
-    	case Latte::E_GX2SURFFMT::BC5_UNORM:
-    		return TextureDecoder_BC5::getInstance();
-    	case Latte::E_GX2SURFFMT::BC5_SNORM:
-    		return TextureDecoder_BC5::getInstance();
-    	case Latte::E_GX2SURFFMT::R24_X8_UNORM:
-    		return TextureDecoder_R24_X8::getInstance();
-    	case Latte::E_GX2SURFFMT::X24_G8_UINT:
-    		return TextureDecoder_X24_G8_UINT::getInstance(); // todo - verify
-    	default:
-    		debug_printf("invalid color texture format %u\n", (uint32)format);
-    		cemu_assert_debug(false);
-    		return nullptr;
-    	}
-    }
-}
-
 MTL::PrimitiveType GetMtlPrimitiveType(LattePrimitiveMode primitiveMode)
 {
     switch (primitiveMode)
@@ -291,7 +239,7 @@ MTL::PrimitiveType GetMtlPrimitiveType(LattePrimitiveMode primitiveMode)
 	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::LINE_LOOP:
 		return MTL::PrimitiveTypeLineStrip; // line loops are emulated as line strips with an extra connecting strip at the end
 	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::LINE_STRIP_ADJACENT: // Tropical Freeze level 3-6
-	    debug_printf("Metal doesn't support line strip adjacent primitive, using line strip instead\n");
+	    cemuLog_logOnce(LogType::Force, "Metal doesn't support line strip adjacent primitive, using line strip instead");
 		return MTL::PrimitiveTypeLineStrip;
 	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::TRIANGLES:
 		return MTL::PrimitiveTypeTriangle;
@@ -306,7 +254,7 @@ MTL::PrimitiveType GetMtlPrimitiveType(LattePrimitiveMode primitiveMode)
 	case Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::RECTS:
 		return MTL::PrimitiveTypeTriangle; // rects are emulated as 2 triangles
 	default:
-		cemuLog_logDebug(LogType::Force, "Metal-Unsupported: Render pipeline with primitive mode {} created", primitiveMode);
+		cemuLog_log(LogType::Force, "Unsupported primitive mode {}", primitiveMode);
 		cemu_assert_debug(false);
 		return MTL::PrimitiveTypeTriangle;
     }
@@ -359,7 +307,7 @@ MTL::VertexFormat GetMtlVertexFormat(uint8 format)
 	case FMT_2_10_10_10:
 		return MTL::VertexFormatUInt; // verified to match OpenGL
 	default:
-		printf("unsupported vertex format %u\n", (uint32)format);
+		cemuLog_log(LogType::Force, "unsupported vertex format {}", (uint32)format);
 		assert_dbg();
 		return MTL::VertexFormatInvalid;
 	}

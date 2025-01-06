@@ -28,7 +28,7 @@ private:
 
 	bool m_has_account_change = false; // keep track of dirty state of accounts
 
-	
+
 	wxPanel* AddGeneralPage(wxNotebook* notebook);
 	wxPanel* AddGraphicsPage(wxNotebook* notebook);
 	wxPanel* AddAudioPage(wxNotebook* notebook);
@@ -78,6 +78,7 @@ private:
 	// Debug
 	wxChoice* m_crash_dump;
 	wxSpinCtrl* m_gdb_port;
+	wxTextCtrl* m_gpu_capture_dir;
 
 	void OnAccountCreate(wxCommandEvent& event);
 	void OnAccountDelete(wxCommandEvent& event);
@@ -106,11 +107,10 @@ private:
 	void UpdateAudioDevice();
 	// refreshes audio device list for dropdown
 	void UpdateAudioDeviceList();
-	
+
 	void ResetAccountInformation();
 	void UpdateAccountInformation();
 	void UpdateOnlineAccounts();
 	void HandleGraphicsApiSelection();
 	void ApplyConfig();
 };
-

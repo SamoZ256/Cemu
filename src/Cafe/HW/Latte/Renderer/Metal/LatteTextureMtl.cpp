@@ -4,6 +4,7 @@
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
 #include "Common/precompiled.h"
 #include "Metal/MTLResource.hpp"
+#include "Metal/MTLTexture.hpp"
 
 LatteTextureMtl::LatteTextureMtl(class MetalRenderer* mtlRenderer, Latte::E_DIM dim, MPTR physAddress, MPTR physMipAddress, Latte::E_GX2SURFFMT format, uint32 width, uint32 height, uint32 depth, uint32 pitch, uint32 mipLevels, uint32 swizzle,
 	Latte::E_HWTILEMODE tileMode, bool isDepth)
@@ -26,15 +27,12 @@ LatteTextureMtl::LatteTextureMtl(class MetalRenderer* mtlRenderer, Latte::E_DIM 
 	effectiveBaseHeight = std::max(1, effectiveBaseHeight);
 	effectiveBaseDepth = std::max(1, effectiveBaseDepth);
 
-	desc->setWidth(effectiveBaseWidth);
-	desc->setHeight(effectiveBaseHeight);
-	desc->setMipmapLevelCount(mipLevels);
-
 	MTL::TextureType textureType;
 	switch (dim)
     {
     case Latte::E_DIM::DIM_1D:
         textureType = MTL::TextureType1D;
+        effectiveBaseHeight = 1;
         break;
     case Latte::E_DIM::DIM_2D:
     case Latte::E_DIM::DIM_2D_MSAA:
@@ -58,36 +56,36 @@ LatteTextureMtl::LatteTextureMtl(class MetalRenderer* mtlRenderer, Latte::E_DIM 
     }
     desc->setTextureType(textureType);
 
+    // Clamp mip levels
+    mipLevels = std::min(mipLevels, (uint32)maxPossibleMipLevels);
+    mipLevels = std::max(mipLevels, (uint32)1);
+
+	desc->setWidth(effectiveBaseWidth);
+	desc->setHeight(effectiveBaseHeight);
+	desc->setMipmapLevelCount(mipLevels);
+
 	if (textureType == MTL::TextureType3D)
 	{
 		desc->setDepth(effectiveBaseDepth);
-	}
-	else if (textureType == MTL::TextureTypeCube)
-	{
-	    // Do notjing
 	}
 	else if (textureType == MTL::TextureTypeCubeArray)
 	{
 		desc->setArrayLength(effectiveBaseDepth / 6);
 	}
-	else
+	else if (textureType == MTL::TextureType2DArray)
 	{
 		desc->setArrayLength(effectiveBaseDepth);
 	}
 
-	auto pixelFormat = GetMtlPixelFormat(format, isDepth, m_mtlr->GetPixelFormatSupport());
+	auto pixelFormat = GetMtlPixelFormat(format, isDepth);
 	desc->setPixelFormat(pixelFormat);
 
-	// TODO: using MTL::TextureUsageShaderWrite as well fixes Mario Tennis: Ultra Smash, investigate why
-	MTL::TextureUsage usage = MTL::TextureUsageShaderRead;
-	if (!Latte::IsCompressedFormat(format))
-	{
+	MTL::TextureUsage usage = MTL::TextureUsageShaderRead | MTL::TextureUsagePixelFormatView;
+	if (FormatIsRenderable(format))
 		usage |= MTL::TextureUsageRenderTarget;
-	}
 	desc->setUsage(usage);
 
 	m_texture = mtlRenderer->GetDevice()->newTexture(desc);
-
 	desc->release();
 }
 
@@ -106,7 +104,8 @@ LatteTextureView* LatteTextureMtl::CreateView(Latte::E_DIM dim, Latte::E_GX2SURF
 	return new LatteTextureViewMtl(m_mtlr, this, dim, format, firstMip, mipCount, firstSlice, sliceCount);
 }
 
+// TODO: lazy allocation?
 void LatteTextureMtl::AllocateOnHost()
 {
-	cemuLog_log(LogType::MetalLogging, "not implemented");
+	// The texture is already allocated
 }

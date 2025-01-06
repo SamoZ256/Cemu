@@ -14,7 +14,7 @@
 #include "config/ActiveSettings.h"
 #include "Cafe/GameProfile/GameProfile.h"
 #include "util/containers/flat_hash_map.hpp"
-#if BOOST_OS_MACOS
+#if ENABLE_METAL
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
 #endif
 #include <cinttypes>
@@ -209,11 +209,9 @@ void LatteShader_free(LatteDecompilerShader* shader)
 	delete shader;
 }
 
-// both vertex and geometry/pixel shader depend on PS inputs
-// we prepare the PS import info in advance
-void LatteShader_UpdatePSInputs(uint32* contextRegisters)
+void LatteShader_CreatePSInputTable(LatteShaderPSInputTable* psInputTable, uint32* contextRegisters)
 {
-	// PS control
+    // PS control
 	uint32 psControl0 = contextRegisters[mmSPI_PS_IN_CONTROL_0];
 	uint32 spi0_positionEnable = (psControl0 >> 8) & 1;
 	uint32 spi0_positionCentroid = (psControl0 >> 9) & 1;
@@ -242,12 +240,12 @@ void LatteShader_UpdatePSInputs(uint32* contextRegisters)
 	{
 		key += std::rotr<uint64>(spi0_paramGen, 7);
 		key += std::rotr<uint64>(spi0_paramGenAddr, 3);
-		_activePSImportTable.paramGen = spi0_paramGen;
-		_activePSImportTable.paramGenGPR = spi0_paramGenAddr;
+		psInputTable->paramGen = spi0_paramGen;
+		psInputTable->paramGenGPR = spi0_paramGenAddr;
 	}
 	else
 	{
-		_activePSImportTable.paramGen = 0;
+		psInputTable->paramGen = 0;
 	}
 
 	// semantic imports from vertex shader
@@ -281,9 +279,9 @@ void LatteShader_UpdatePSInputs(uint32* contextRegisters)
 		key = std::rotl<uint64>(key, 7);
 		if (spi0_positionEnable && f == spi0_positionAddr)
 		{
-			_activePSImportTable.import[f].semanticId = LATTE_ANALYZER_IMPORT_INDEX_SPIPOSITION;
-			_activePSImportTable.import[f].isFlat = false;
-			_activePSImportTable.import[f].isNoPerspective = false;
+			psInputTable->import[f].semanticId = LATTE_ANALYZER_IMPORT_INDEX_SPIPOSITION;
+			psInputTable->import[f].isFlat = false;
+			psInputTable->import[f].isNoPerspective = false;
 			key += (uint64)0x33;
 		}
 		else
@@ -296,13 +294,20 @@ void LatteShader_UpdatePSInputs(uint32* contextRegisters)
 			semanticMask[psSemanticId >> 3] |= (1 << (psSemanticId & 7));
 #endif
 
-			_activePSImportTable.import[f].semanticId = psSemanticId;
-			_activePSImportTable.import[f].isFlat = (psInputControl&(1 << 10)) != 0;
-			_activePSImportTable.import[f].isNoPerspective = (psInputControl&(1 << 12)) != 0;
+			psInputTable->import[f].semanticId = psSemanticId;
+			psInputTable->import[f].isFlat = (psInputControl&(1 << 10)) != 0;
+			psInputTable->import[f].isNoPerspective = (psInputControl&(1 << 12)) != 0;
 		}
 	}
-	_activePSImportTable.key = key;
-	_activePSImportTable.count = numPSInputs;
+	psInputTable->key = key;
+	psInputTable->count = numPSInputs;
+}
+
+// both vertex and geometry/pixel shader depend on PS inputs
+// we prepare the PS import info in advance
+void LatteShader_UpdatePSInputs(uint32* contextRegisters)
+{
+	LatteShader_CreatePSInputTable(&_activePSImportTable, contextRegisters);
 }
 
 void LatteShader_CreateRendererShader(LatteDecompilerShader* shader, bool compileAsync)
@@ -503,11 +508,21 @@ void LatteSHRC_UpdateVSBaseHash(uint8* vertexShaderPtr, uint32 vertexShaderSize,
 	uint64 vsHash = vsHash1 + vsHash2 + _activeFetchShader->key + _activePSImportTable.key + (usesGeometryShader ? 0x1111ULL : 0ULL);
 	if (g_renderer->GetType() == RendererAPI::Metal)
 	{
-	    if (usesGeometryShader)
+	    if (usesGeometryShader || _activeFetchShader->mtlFetchVertexManually)
 		{
-	        vsHash += _activeFetchShader->mtlShaderHashObject;
+    		for (sint32 g = 0; g < _activeFetchShader->bufferGroups.size(); g++)
+            {
+           	    LatteParsedFetchShaderBufferGroup_t& group = _activeFetchShader->bufferGroups[g];
+          		uint32 bufferIndex = group.attributeBufferIndex;
+          		uint32 bufferBaseRegisterIndex = mmSQ_VTX_ATTRIBUTE_BLOCK_START + bufferIndex * 7;
+          		uint32 bufferStride = (LatteGPUState.contextRegister[bufferBaseRegisterIndex + 2] >> 11) & 0xFFFF;
+
+                vsHash += (uint64)bufferStride;
+          		vsHash = std::rotl<uint64>(vsHash, 7);
+            }
 		}
-		else
+
+	    if (!usesGeometryShader)
 		{
     		// Rasterization
     		bool rasterizationEnabled = !LatteGPUState.contextNew.PA_CL_CLIP_CNTL.get_DX_RASTERIZATION_KILL();
@@ -524,6 +539,10 @@ void LatteSHRC_UpdateVSBaseHash(uint8* vertexShaderPtr, uint32 vertexShaderSize,
 
     		if (rasterizationEnabled)
     		    vsHash += 51ULL;
+
+            // Vertex fetch
+            if (_activeFetchShader->mtlFetchVertexManually)
+                vsHash += 349ULL;
 		}
 	}
 
@@ -531,6 +550,7 @@ void LatteSHRC_UpdateVSBaseHash(uint8* vertexShaderPtr, uint32 vertexShaderSize,
 	vsHash += tmp;
 
 	auto primitiveType = LatteGPUState.contextNew.VGT_PRIMITIVE_TYPE.get_PRIMITIVE_MODE();
+	// TODO: include always in the hash in case of geometry shader or rect shader
 	if (primitiveType == Latte::LATTE_VGT_PRIMITIVE_TYPE::E_PRIMITIVE_TYPE::RECTS)
 	{
 		vsHash += 13ULL;
@@ -571,7 +591,7 @@ void LatteSHRC_UpdatePSBaseHash(uint8* pixelShaderPtr, uint32 pixelShaderSize, b
 	// get vertex shader
 	uint64 psHash = psHash1 + psHash2 + _activePSImportTable.key + (usesGeometryShader ? hashCacheGS.prevHash1 : 0ULL);
 
-#if BOOST_OS_MACOS
+#if ENABLE_METAL
 	if (g_renderer->GetType() == RendererAPI::Metal)
 	{
         for (uint8 i = 0; i < LATTE_NUM_COLOR_TARGET; i++)

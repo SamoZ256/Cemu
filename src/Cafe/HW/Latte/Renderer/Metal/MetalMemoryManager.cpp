@@ -1,103 +1,10 @@
 #include "Cafe/HW/Latte/Renderer/Metal/MetalCommon.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalMemoryManager.h"
-#include "Cafe/HW/Latte/Renderer/Metal/MetalHybridComputePipeline.h"
+#include "Cafe/HW/Latte/Renderer/Metal/MetalVoidVertexPipeline.h"
+
+#include "Cemu/Logging/CemuLogging.h"
 #include "Common/precompiled.h"
-#include "HW/Latte/Renderer/Metal/MetalRenderer.h"
-#include "Metal/MTLResource.hpp"
-
-MetalVertexBufferCache::~MetalVertexBufferCache()
-{
-}
-
-MetalRestridedBufferRange MetalVertexBufferCache::RestrideBufferIfNeeded(MTL::Buffer* bufferCache, uint32 bufferIndex, size_t stride)
-{
-    auto vertexBufferRange = m_bufferRanges[bufferIndex];
-    auto& restrideInfo = *vertexBufferRange.restrideInfo;
-
-    if (stride % 4 == 0)
-    {
-        // No restride needed
-        return {bufferCache, vertexBufferRange.offset};
-    }
-
-    MTL::Buffer* buffer;
-    if (restrideInfo.memoryInvalidated || stride != restrideInfo.lastStride)
-    {
-        size_t newStride = Align(stride, 4);
-        size_t newSize = vertexBufferRange.size / stride * newStride;
-        restrideInfo.allocation = m_bufferAllocator.GetBufferAllocation(newSize);
-        buffer = m_bufferAllocator.GetBuffer(restrideInfo.allocation.bufferIndex);
-
-        //uint8* oldPtr = (uint8*)bufferCache->contents() + vertexBufferRange.offset;
-        //uint8* newPtr = (uint8*)buffer->contents() + restrideInfo.allocation.bufferOffset;
-
-        //for (size_t elem = 0; elem < vertexBufferRange.size / stride; elem++)
-    	//{
-    	//	memcpy(newPtr + elem * newStride, oldPtr + elem * stride, stride);
-    	//}
-        //debug_printf("Restrided vertex buffer (old stride: %zu, new stride: %zu, old size: %zu, new size: %zu)\n", stride, newStride, vertexBufferRange.size, newSize);
-
-        if (m_mtlr->GetEncoderType() == MetalEncoderType::Render)
-        {
-            auto renderCommandEncoder = static_cast<MTL::RenderCommandEncoder*>(m_mtlr->GetCommandEncoder());
-
-            renderCommandEncoder->setRenderPipelineState(m_restrideBufferPipeline->GetRenderPipelineState());
-            m_mtlr->GetEncoderState().m_renderPipelineState = m_restrideBufferPipeline->GetRenderPipelineState();
-
-            m_mtlr->SetBuffer(renderCommandEncoder, METAL_SHADER_TYPE_VERTEX, bufferCache, vertexBufferRange.offset, GET_HELPER_BUFFER_BINDING(0));
-            m_mtlr->SetBuffer(renderCommandEncoder, METAL_SHADER_TYPE_VERTEX, buffer, restrideInfo.allocation.offset, GET_HELPER_BUFFER_BINDING(1));
-
-            struct
-            {
-                uint32 oldStride;
-                uint32 newStride;
-            } strideData = {static_cast<uint32>(stride), static_cast<uint32>(newStride)};
-            renderCommandEncoder->setVertexBytes(&strideData, sizeof(strideData), GET_HELPER_BUFFER_BINDING(2));
-            m_mtlr->GetEncoderState().m_buffers[METAL_SHADER_TYPE_VERTEX][GET_HELPER_BUFFER_BINDING(2)] = {nullptr};
-
-            renderCommandEncoder->drawPrimitives(MTL::PrimitiveTypeTriangleStrip, NS::UInteger(0), vertexBufferRange.size / stride);
-
-            // TODO: do the barriers in one call?
-            MTL::Resource* barrierBuffers[] = {buffer};
-            renderCommandEncoder->memoryBarrier(barrierBuffers, 1, MTL::RenderStageVertex, MTL::RenderStageVertex);
-
-            // Debug
-            m_mtlr->GetPerformanceMonitor().m_vertexBufferRestrides++;
-        }
-        else
-        {
-            debug_printf("vertex buffer restride needs an active render encoder\n");
-            cemu_assert_suspicious();
-        }
-
-        restrideInfo.memoryInvalidated = false;
-        restrideInfo.lastStride = newStride;
-    }
-    else
-    {
-        buffer = m_bufferAllocator.GetBuffer(restrideInfo.allocation.bufferIndex);
-    }
-
-    return {buffer, restrideInfo.allocation.offset};
-}
-
-void MetalVertexBufferCache::MemoryRangeChanged(size_t offset, size_t size)
-{
-    for (uint32 i = 0; i < LATTE_MAX_VERTEX_BUFFERS; i++)
-    {
-        auto vertexBufferRange = m_bufferRanges[i];
-        if (vertexBufferRange.offset != INVALID_OFFSET)
-        {
-            if ((offset < vertexBufferRange.offset && (offset + size) < (vertexBufferRange.offset + vertexBufferRange.size)) ||
-                (offset > vertexBufferRange.offset && (offset + size) > (vertexBufferRange.offset + vertexBufferRange.size)))
-            {
-                continue;
-            }
-
-            vertexBufferRange.restrideInfo->memoryInvalidated = true;
-        }
-    }
-}
+#include "HW/MMU/MMU.h"
 
 MetalMemoryManager::~MetalMemoryManager()
 {
@@ -107,7 +14,7 @@ MetalMemoryManager::~MetalMemoryManager()
     }
 }
 
-void* MetalMemoryManager::GetTextureUploadBuffer(size_t size)
+void* MetalMemoryManager::AcquireTextureUploadBuffer(size_t size)
 {
     if (m_textureUploadBuffer.size() < size)
     {
@@ -117,11 +24,42 @@ void* MetalMemoryManager::GetTextureUploadBuffer(size_t size)
     return m_textureUploadBuffer.data();
 }
 
+void MetalMemoryManager::ReleaseTextureUploadBuffer(uint8* mem)
+{
+    cemu_assert_debug(m_textureUploadBuffer.data() == mem);
+	m_textureUploadBuffer.clear();
+}
+
 void MetalMemoryManager::InitBufferCache(size_t size)
 {
     cemu_assert_debug(!m_bufferCache);
 
-    m_bufferCache = m_mtlr->GetDevice()->newBuffer(size, MTL::ResourceStorageModePrivate);
+    m_bufferCacheMode = g_current_game_profile->GetBufferCacheMode();
+
+    // First, try to import the host memory as a buffer
+    if (m_bufferCacheMode == BufferCacheMode::Host)
+    {
+        if (m_mtlr->HasUnifiedMemory())
+        {
+            m_importedMemBaseAddress = mmuRange_MEM2.getBase();
+           	m_hostAllocationSize = mmuRange_MEM2.getSize();
+            m_bufferCache = m_mtlr->GetDevice()->newBuffer(memory_getPointerFromVirtualOffset(m_importedMemBaseAddress), m_hostAllocationSize, MTL::ResourceStorageModeShared, nullptr);
+            if (!m_bufferCache)
+            {
+                cemuLog_log(LogType::Force, "Failed to import host memory as a buffer, using device shared mode instead");
+                m_bufferCacheMode = BufferCacheMode::DeviceShared;
+            }
+        }
+        else
+        {
+            cemuLog_log(LogType::Force, "Host buffer cache mode is only available on unified memory systems, using device shared mode instead");
+            m_bufferCacheMode = BufferCacheMode::DeviceShared;
+        }
+    }
+
+    if (!m_bufferCache)
+        m_bufferCache = m_mtlr->GetDevice()->newBuffer(size, (m_bufferCacheMode == BufferCacheMode::DevicePrivate ? MTL::ResourceStorageModePrivate : MTL::ResourceStorageModeShared));
+
 #ifdef CEMU_DEBUG_ASSERT
     m_bufferCache->setLabel(GetLabel("Buffer cache", m_bufferCache));
 #endif
@@ -129,31 +67,40 @@ void MetalMemoryManager::InitBufferCache(size_t size)
 
 void MetalMemoryManager::UploadToBufferCache(const void* data, size_t offset, size_t size)
 {
+    cemu_assert_debug(m_bufferCacheMode != BufferCacheMode::Host);
     cemu_assert_debug(m_bufferCache);
     cemu_assert_debug((offset + size) <= m_bufferCache->length());
 
-    auto allocation = m_tempBufferAllocator.GetBufferAllocation(size);
-    auto buffer = m_tempBufferAllocator.GetBufferOutsideOfCommandBuffer(allocation.bufferIndex);
-    memcpy((uint8*)buffer->contents() + allocation.offset, data, size);
+    if (m_bufferCacheMode == BufferCacheMode::DevicePrivate)
+    {
+        auto allocation = m_tempBufferAllocator.GetBufferAllocation(size);
+        auto buffer = m_tempBufferAllocator.GetBufferOutsideOfCommandBuffer(allocation.bufferIndex);
+        memcpy((uint8*)buffer->contents() + allocation.offset, data, size);
 
-    // Lock the buffer to make sure it's not deallocated before the copy is done
-    m_tempBufferAllocator.LockBuffer(allocation.bufferIndex);
+        // Lock the buffer to make sure it's not deallocated before the copy is done
+        m_tempBufferAllocator.LockBuffer(allocation.bufferIndex);
 
-    m_mtlr->CopyBufferToBuffer(buffer, allocation.offset, m_bufferCache, offset, size, ALL_MTL_RENDER_STAGES, ALL_MTL_RENDER_STAGES);
+        m_mtlr->CopyBufferToBuffer(buffer, allocation.offset, m_bufferCache, offset, size, ALL_MTL_RENDER_STAGES, ALL_MTL_RENDER_STAGES);
 
-    // Make sure the buffer has the right command buffer
-    m_tempBufferAllocator.GetBuffer(allocation.bufferIndex); // TODO: make a helper function for this
+        // Make sure the buffer has the right command buffer
+        m_tempBufferAllocator.GetBuffer(allocation.bufferIndex); // TODO: make a helper function for this
 
-    // We can now safely unlock the buffer
-    m_tempBufferAllocator.UnlockBuffer(allocation.bufferIndex);
-
-    // Notify vertex buffer cache about the change
-    m_vertexBufferCache.MemoryRangeChanged(offset, size);
+        // We can now safely unlock the buffer
+        m_tempBufferAllocator.UnlockBuffer(allocation.bufferIndex);
+    }
+    else
+    {
+        memcpy((uint8*)m_bufferCache->contents() + offset, data, size);
+    }
 }
 
 void MetalMemoryManager::CopyBufferCache(size_t srcOffset, size_t dstOffset, size_t size)
 {
+    cemu_assert_debug(m_bufferCacheMode != BufferCacheMode::Host);
     cemu_assert_debug(m_bufferCache);
 
-    m_mtlr->CopyBufferToBuffer(m_bufferCache, srcOffset, m_bufferCache, dstOffset, size, ALL_MTL_RENDER_STAGES, ALL_MTL_RENDER_STAGES);
+    if (m_bufferCacheMode == BufferCacheMode::DevicePrivate)
+        m_mtlr->CopyBufferToBuffer(m_bufferCache, srcOffset, m_bufferCache, dstOffset, size, ALL_MTL_RENDER_STAGES, ALL_MTL_RENDER_STAGES);
+    else
+        memcpy((uint8*)m_bufferCache->contents() + dstOffset, (uint8*)m_bufferCache->contents() + srcOffset, size);
 }

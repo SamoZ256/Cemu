@@ -450,14 +450,6 @@ bool LatteMRT::UpdateCurrentFBO()
 	uint8 colorBufferMask = GetActiveColorBufferMask(pixelShader, LatteGPUState.contextNew);
 	bool depthBufferMask = GetActiveDepthBufferMask(LatteGPUState.contextNew);
 
-	// if depth test is not used then detach the depth buffer
-	bool depthEnable = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_ENABLE();
-	bool stencilTestEnable = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_STENCIL_ENABLE();
-	bool backStencilEnable = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_BACK_STENCIL_ENABLE();
-
-	if (!depthEnable && !stencilTestEnable && !backStencilEnable)
-		depthBufferMask = false;
-
 	bool hasResizedTexture = false; // set to true if any of the color buffers or the depth buffer reference a resized texture (via graphic pack texture rules)
 	sLatteRenderTargetState.renderTargetIsResized = false;
 	// real size
@@ -934,13 +926,6 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
 	{
 		sint32 scaling_filter = downscaling ? GetConfig().downscale_filter : GetConfig().upscale_filter;
 
-		if (g_renderer->GetType() == RendererAPI::Vulkan || g_renderer->GetType() == RendererAPI::Metal)
-		{
-			// force linear or nearest neighbor filter
-			if(scaling_filter != kLinearFilter && scaling_filter != kNearestNeighborFilter)
-				scaling_filter = kLinearFilter;
-		}
-
 		if (scaling_filter == kLinearFilter)
 		{
 			if(renderUpsideDown)
@@ -957,7 +942,7 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
 			else
 				shader = RendererOutputShader::s_bicubic_shader;
 
-			filter = LatteTextureView::MagFilter::kNearestNeighbor;
+			filter = LatteTextureView::MagFilter::kLinear;
 		}
 		else if (scaling_filter == kBicubicHermiteFilter)
 		{
@@ -978,8 +963,7 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
 			filter = LatteTextureView::MagFilter::kNearestNeighbor;
 		}
 	}
-	// HACK: comment out the assert
-	//cemu_assert(shader);
+	cemu_assert(shader);
 	g_renderer->DrawBackbufferQuad(textureView, shader, filter==LatteTextureView::MagFilter::kLinear, imageX, imageY, imageWidth, imageHeight, isPadView, clearBackground);
 	g_renderer->HandleScreenshotRequest(textureView, isPadView);
 	if (!g_renderer->ImguiBegin(!isPadView))
@@ -990,8 +974,6 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
 	g_renderer->ImguiEnd();
 }
 
-bool ctrlTabHotkeyPressed = false;
-
 void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uint32 colorBufferWidth, uint32 colorBufferHeight, uint32 colorBufferSliceIndex, uint32 colorBufferFormat, uint32 colorBufferPitch, Latte::E_HWTILEMODE colorBufferTilemode, uint32 colorBufferSwizzle, uint32 renderTarget)
 {
 	cemu_assert_debug(colorBufferSliceIndex == 0); // todo - support for non-zero slice
@@ -1001,38 +983,31 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 		return;
 	}
 
+	auto getVPADScreenActive = [](size_t n) -> std::pair<bool, bool> {
+		auto controller = InputManager::instance().get_vpad_controller(n);
+		if (!controller)
+			return {false,false};
+		auto pressed = controller->is_screen_active();
+		auto toggle = controller->is_screen_active_toggle();
+		return {pressed && !toggle, pressed && toggle};
+	};
+
 	const bool tabPressed = gui_isKeyDown(PlatformKeyCodes::TAB);
 	const bool ctrlPressed = gui_isKeyDown(PlatformKeyCodes::LCONTROL);
+	const auto [vpad0Active, vpad0Toggle] = getVPADScreenActive(0);
+	const auto [vpad1Active, vpad1Toggle] = getVPADScreenActive(1);
 
-	bool showDRC = swkbd_hasKeyboardInputHook() == false && tabPressed;
-	bool& alwaysDisplayDRC = LatteGPUState.alwaysDisplayDRC;
+	const bool altScreenRequested = (!ctrlPressed && tabPressed) || vpad0Active || vpad1Active;
+	const bool togglePressed = (ctrlPressed && tabPressed) || vpad0Toggle || vpad1Toggle;
+	static bool togglePressedLast = false;
 
-	if (ctrlPressed && tabPressed)
-	{
-		if (ctrlTabHotkeyPressed == false)
-		{
-			alwaysDisplayDRC = !alwaysDisplayDRC;
-			ctrlTabHotkeyPressed = true;
-		}
-	}
-	else
-		ctrlTabHotkeyPressed = false;
+	bool& isDRCPrimary = LatteGPUState.isDRCPrimary;
 
-	if (alwaysDisplayDRC)
-		showDRC = !tabPressed;
+	if(togglePressed && !togglePressedLast)
+		isDRCPrimary = !isDRCPrimary;
+	togglePressedLast = togglePressed;
 
-	if (!showDRC)
-	{
-		auto controller = InputManager::instance().get_vpad_controller(0);
-		if (controller && controller->is_screen_active())
-			showDRC = true;
-		if (!showDRC)
-		{
-			controller = InputManager::instance().get_vpad_controller(1);
-			if (controller && controller->is_screen_active())
-				showDRC = true;
-		}
-	}
+	bool showDRC = swkbd_hasKeyboardInputHook() == false && (isDRCPrimary ^ altScreenRequested);
 
 	if ((renderTarget & RENDER_TARGET_DRC) && g_renderer->IsPadWindowActive())
 		LatteRenderTarget_copyToBackbuffer(texView, true);

@@ -2,10 +2,11 @@
 
 #include "Common/precompiled.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalCommon.h"
+#include "HW/Latte/Core/LatteShader.h"
 
 namespace LatteDecompiler
 {
-	static void _emitUniformVariables(LatteDecompilerShaderContext* decompilerContext)
+	static void _emitUniformVariables(LatteDecompilerShaderContext* decompilerContext, bool isRectVertexShader)
 	{
 	    auto src = decompilerContext->shaderSource;
 
@@ -20,14 +21,7 @@ namespace LatteDecompiler
 		{
 			// uniform registers or buffers are accessed statically with predictable offsets
 			// this allows us to remap the used entries into a more compact array
-			if (shaderType == LatteConst::ShaderType::Vertex)
-				src->addFmt("int4 remappedVS[{}];" _CRLF, (sint32)shader->list_remappedUniformEntries.size());
-			else if (shaderType == LatteConst::ShaderType::Pixel)
-				src->addFmt("int4 remappedPS[{}];" _CRLF, (sint32)shader->list_remappedUniformEntries.size());
-			else if (shaderType == LatteConst::ShaderType::Geometry)
-				src->addFmt("int4 remappedGS[{}];" _CRLF, (sint32)shader->list_remappedUniformEntries.size());
-			else
-				debugBreakpoint();
+			src->addFmt("int4 remapped[{}];" _CRLF, (sint32)shader->list_remappedUniformEntries.size());
 			uniformOffsets.offset_remapped = uniformCurrentOffset;
 			uniformCurrentOffset += 16 * shader->list_remappedUniformEntries.size();
 		}
@@ -35,12 +29,7 @@ namespace LatteDecompiler
 		{
 			uint32 cfileSize = decompilerContext->analyzer.uniformRegisterAccessTracker.DetermineSize(decompilerContext->shaderBaseHash, 256);
 			// full or partial uniform register file has to be present
-			if (shaderType == LatteConst::ShaderType::Vertex)
-				src->addFmt("int4 uniformRegisterVS[{}];" _CRLF, cfileSize);
-			else if (shaderType == LatteConst::ShaderType::Pixel)
-				src->addFmt("int4 uniformRegisterPS[{}];" _CRLF, cfileSize);
-			else if (shaderType == LatteConst::ShaderType::Geometry)
-				src->addFmt("int4 uniformRegisterGS[{}];" _CRLF, cfileSize);
+			src->addFmt("int4 uniformRegister[{}];" _CRLF, cfileSize);
 			uniformOffsets.offset_uniformRegister = uniformCurrentOffset;
 			uniformOffsets.count_uniformRegister = cfileSize;
 			uniformCurrentOffset += 16 * cfileSize;
@@ -97,8 +86,11 @@ namespace LatteDecompiler
 			uniformCurrentOffset += 8;
 		}
 		// define verticesPerInstance + streamoutBufferBaseX
-		if ((shader->shaderType == LatteConst::ShaderType::Vertex && !decompilerContext->options->usesGeometryShader) ||
-			(shader->shaderType == LatteConst::ShaderType::Geometry))
+		if ((shader->shaderType == LatteConst::ShaderType::Vertex &&
+		    (decompilerContext->options->usesGeometryShader || isRectVertexShader)) ||
+	        (decompilerContext->analyzer.useSSBOForStreamout &&
+			(shader->shaderType == LatteConst::ShaderType::Vertex && !decompilerContext->options->usesGeometryShader) ||
+			(shader->shaderType == LatteConst::ShaderType::Geometry)))
 		{
 			src->add("int verticesPerInstance;" _CRLF);
 			uniformOffsets.offset_verticesPerInstance = uniformCurrentOffset;
@@ -155,7 +147,7 @@ namespace LatteDecompiler
 		}
 	}
 
-	static void _emitAttributes(LatteDecompilerShaderContext* decompilerContext, bool isRectVertexShader)
+	static void _emitAttributes(LatteDecompilerShaderContext* decompilerContext, bool fetchVertexManually)
 	{
 		auto src = decompilerContext->shaderSource;
 		std::string attributeNames;
@@ -171,7 +163,7 @@ namespace LatteDecompiler
 					cemu_assert_debug(decompilerContext->output->resourceMappingMTL.attributeMapping[i] >= 0);
 
 					src->addFmt("uint4 attrDataSem{}", i);
-					if (decompilerContext->options->usesGeometryShader || isRectVertexShader)
+					if (fetchVertexManually)
 					    attributeNames += "#define ATTRIBUTE_NAME" + std::to_string((sint32)decompilerContext->output->resourceMappingMTL.attributeMapping[i]) + " attrDataSem" + std::to_string(i) + "\n";
 					else
 					    src->addFmt(" [[attribute({})]]", (sint32)decompilerContext->output->resourceMappingMTL.attributeMapping[i]);
@@ -188,12 +180,13 @@ namespace LatteDecompiler
 		auto* src = shaderContext->shaderSource;
 
 		src->add("struct VertexOut {" _CRLF);
-		src->add("float4 position [[position]];" _CRLF);
+		src->add("float4 position [[position]] [[invariant]];" _CRLF);
 		if (shaderContext->analyzer.outputPointSize)
 		    src->add("float pointSize [[point_size]];" _CRLF);
 
 		LatteShaderPSInputTable* psInputTable = LatteSHRC_GetPSInputTable();
 		auto parameterMask = shaderContext->shader->outputParameterMask;
+		bool psInputsWritten[GPU7_PS_MAX_INPUTS] = {false};
 		for (uint32 i = 0; i < 32; i++)
 		{
 			if ((parameterMask&(1 << i)) == 0)
@@ -214,6 +207,8 @@ namespace LatteDecompiler
 			if (psInputIndex == -1)
 				continue; // no ps input
 
+			psInputsWritten[psInputIndex] = true;
+
 			src->addFmt("float4 passParameterSem{}", psInputTable->import[psInputIndex].semanticId);
 			if (!isRectVertexShader)
 			{
@@ -224,6 +219,19 @@ namespace LatteDecompiler
     				src->add(" [[center_no_perspective]]");
 			}
 			src->addFmt(";" _CRLF);
+		}
+
+		// TODO: handle this in the fragment shader instead?
+		// Declare all PS inputs that are not written by the VS
+		for (uint32 i = 0; i < psInputTable->count; i++)
+		{
+		    if (psInputsWritten[i])
+				continue;
+
+			if (psInputTable->import[i].semanticId > LATTE_ANALYZER_IMPORT_INDEX_PARAM_MAX)
+				continue;
+
+			src->addFmt("float4 unknown{} [[user(locn{})]];" _CRLF, psInputTable->import[i].semanticId, i);
 		}
 
 		src->add("};" _CRLF _CRLF);
@@ -262,13 +270,13 @@ namespace LatteDecompiler
 		src->add("};" _CRLF _CRLF);
 	}
 
-	static void _emitInputsAndOutputs(LatteDecompilerShaderContext* decompilerContext, bool isRectVertexShader, bool rasterizationEnabled)
+	static void _emitInputsAndOutputs(LatteDecompilerShaderContext* decompilerContext, bool isRectVertexShader, bool fetchVertexManually, bool rasterizationEnabled)
 	{
 		auto src = decompilerContext->shaderSource;
 
 		if (decompilerContext->shaderType == LatteConst::ShaderType::Vertex)
 		{
-		    _emitAttributes(decompilerContext, isRectVertexShader);
+		    _emitAttributes(decompilerContext, fetchVertexManually);
 		}
 		else if (decompilerContext->shaderType == LatteConst::ShaderType::Pixel)
 		{
@@ -351,13 +359,12 @@ namespace LatteDecompiler
 		}
 	}
 
-	static void emitHeader(LatteDecompilerShaderContext* decompilerContext, bool isRectVertexShader, bool rasterizationEnabled)
+	static void emitHeader(LatteDecompilerShaderContext* decompilerContext, bool isRectVertexShader, bool fetchVertexManually, bool rasterizationEnabled)
 	{
 	    auto src = decompilerContext->shaderSource;
 
         if ((decompilerContext->options->usesGeometryShader || isRectVertexShader) && (decompilerContext->shaderType == LatteConst::ShaderType::Vertex || decompilerContext->shaderType == LatteConst::ShaderType::Geometry))
         {
-            // TODO: make vsOutPrimType parth of the shader hash
             LattePrimitiveMode vsOutPrimType = static_cast<LattePrimitiveMode>(decompilerContext->contextRegisters[mmVGT_PRIMITIVE_TYPE]);
             uint32 gsOutPrimType = decompilerContext->contextRegisters[mmVGT_GS_OUT_PRIM_TYPE];
 
@@ -376,7 +383,7 @@ namespace LatteDecompiler
                 src->add("#define VERTICES_PER_VERTEX_PRIMITIVE 3" _CRLF);
                 break;
             default:
-                cemu_assert_suspicious();
+                cemuLog_log(LogType::Force, "Unknown vertex out primitive type {}", vsOutPrimType);
                 break;
             }
             if (decompilerContext->shaderType == LatteConst::ShaderType::Geometry)
@@ -396,21 +403,26 @@ namespace LatteDecompiler
                    	src->add("#define GET_PRIMITIVE_COUNT(vertexCount) (vertexCount - 2)" _CRLF);
                     break;
                 default:
-                    cemu_assert_suspicious();
+                    cemuLog_log(LogType::Force, "Unknown geometry out primitive type {}", gsOutPrimType);
                     break;
                 }
             }
         }
 
+        if (decompilerContext->contextRegistersNew->PA_CL_CLIP_CNTL.get_DX_CLIP_SPACE_DEF())
+			src->add("#define SET_POSITION(_v) out.position = _v" _CRLF);
+		else
+			src->add("#define SET_POSITION(_v) out.position = _v; out.position.z = (out.position.z + out.position.w) / 2.0" _CRLF);
+
 		const bool dump_shaders_enabled = ActiveSettings::DumpShadersEnabled();
 		if(dump_shaders_enabled)
 			decompilerContext->shaderSource->add("// start of shader inputs/outputs, predetermined by Cemu. Do not touch" _CRLF);
 		// uniform variables
-		_emitUniformVariables(decompilerContext);
+		_emitUniformVariables(decompilerContext, isRectVertexShader);
 		// uniform buffers
 		_emitUniformBuffers(decompilerContext);
 		// inputs and outputs
-		_emitInputsAndOutputs(decompilerContext, isRectVertexShader, rasterizationEnabled);
+		_emitInputsAndOutputs(decompilerContext, isRectVertexShader, fetchVertexManually, rasterizationEnabled);
 
 		if (dump_shaders_enabled)
 			decompilerContext->shaderSource->add("// end of shader inputs/outputs" _CRLF);
@@ -484,7 +496,7 @@ namespace LatteDecompiler
 		}
 	}
 
-	static void emitInputs(LatteDecompilerShaderContext* decompilerContext, bool isRectVertexShader)
+	static void emitInputs(LatteDecompilerShaderContext* decompilerContext, bool isRectVertexShader, bool fetchVertexManually)
 	{
 	    auto src = decompilerContext->shaderSource;
 
@@ -497,18 +509,23 @@ namespace LatteDecompiler
                 src->add(", mesh_grid_properties meshGridProperties");
                 src->add(", uint tig [[threadgroup_position_in_grid]]");
                 src->add(", uint tid [[thread_index_in_threadgroup]]");
-                // TODO: inly include index buffer if needed
+                // TODO: only include index buffer if needed
                 src->addFmt(", device uint* indexBuffer [[buffer({})]]", decompilerContext->output->resourceMappingMTL.indexBufferBinding);
-                // TODO: use uchar?
-                src->addFmt(", constant uint& indexType [[buffer({})]]", decompilerContext->output->resourceMappingMTL.indexTypeBinding);
-                src->add(" VERTEX_BUFFER_DEFINITIONS");
+                // TODO: put into the support buffer?
+                src->addFmt(", constant uchar& indexType [[buffer({})]]", decompilerContext->output->resourceMappingMTL.indexTypeBinding);
 			}
 			else
 			{
-                src->add("VertexIn in [[stage_in]]");
-                src->add(", uint vid [[vertex_id]]");
+			    // TODO: only include these if needed?
+                src->add("uint vid [[vertex_id]]");
                 src->add(", uint iid [[instance_id]]");
 			}
+
+            if (fetchVertexManually)
+                src->add(" VERTEX_BUFFER_DEFINITIONS");
+			else
+				src->add(", VertexIn in [[stage_in]]");
+
             break;
         case LatteConst::ShaderType::Geometry:
             src->add("MeshType mesh");
@@ -516,6 +533,8 @@ namespace LatteDecompiler
             break;
         case LatteConst::ShaderType::Pixel:
             src->add("FragmentIn in [[stage_in]]");
+            // TODO: only include these if needed?
+            src->add(", float2 pointCoord [[point_coord]]");
             src->add(", bool frontFacing [[front_facing]]");
             break;
         default:

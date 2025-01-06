@@ -22,9 +22,18 @@ struct MetalPixelFormatSupport
 	}
 };
 
+// TODO: don't define a new struct for this
+struct MetalQueryRange
+{
+    uint32 begin;
+	uint32 end;
+};
+
 #define MAX_MTL_BUFFERS 31
 // Buffer indices 28-30 are reserved for the helper shaders
-#define GET_MTL_VERTEX_BUFFER_INDEX(index) (MAX_MTL_BUFFERS - index - 4)
+#define MTL_RESERVED_BUFFERS 3
+#define MAX_MTL_VERTEX_BUFFERS (MAX_MTL_BUFFERS - MTL_RESERVED_BUFFERS)
+#define GET_MTL_VERTEX_BUFFER_INDEX(index) (MAX_MTL_VERTEX_BUFFERS - index - 1)
 
 #define MAX_MTL_TEXTURES 31
 #define MAX_MTL_SAMPLERS 16
@@ -58,6 +67,18 @@ inline NS::String* ToNSString(const std::string& str)
     return ToNSString(str.c_str());
 }
 
+// Cast from const char* to NS::URL*
+inline NS::URL* ToNSURL(const char* str)
+{
+    return NS::URL::fileURLWithPath(ToNSString(str));
+}
+
+// Cast from std::string to NS::URL*
+inline NS::URL* ToNSURL(const std::string& str)
+{
+    return ToNSURL(str.c_str());
+}
+
 inline NS::String* GetLabel(const std::string& label, const void* identifier)
 {
     return ToNSString(label + " (" + std::to_string(reinterpret_cast<uintptr_t>(identifier)) + ")");
@@ -68,4 +89,15 @@ constexpr MTL::RenderStages ALL_MTL_RENDER_STAGES = MTL::RenderStageVertex | MTL
 inline bool IsValidDepthTextureType(Latte::E_DIM dim)
 {
     return (dim == Latte::E_DIM::DIM_2D || dim == Latte::E_DIM::DIM_2D_MSAA || dim == Latte::E_DIM::DIM_2D_ARRAY || dim == Latte::E_DIM::DIM_2D_ARRAY_MSAA || dim == Latte::E_DIM::DIM_CUBEMAP);
+}
+
+inline bool CommandBufferCompleted(MTL::CommandBuffer* commandBuffer)
+{
+    auto status = commandBuffer->status();
+    return (status == MTL::CommandBufferStatusCompleted || status == MTL::CommandBufferStatusError);
+}
+
+inline bool FormatIsRenderable(Latte::E_GX2SURFFMT format)
+{
+    return !Latte::IsCompressedFormat(format);
 }
