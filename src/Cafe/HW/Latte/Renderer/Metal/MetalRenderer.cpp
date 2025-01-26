@@ -159,31 +159,31 @@ MetalRenderer::MetalRenderer()
             if (m_isAppleGPU)
             {
                 m_positionInvariance = false;
-                m_eliminateDepthPrepass = true;
+                m_clearDepthPrepass = true;
             }
             else
             {
                 m_positionInvariance = true; // TODO: is position invariance necessary on non-Apple GPUs?
-                m_eliminateDepthPrepass = false;
+                m_clearDepthPrepass = false;
             }
             break;
         default:
             m_positionInvariance = false;
-            m_eliminateDepthPrepass = false;
+            m_clearDepthPrepass = false;
             break;
         }
         break;
     case DepthPrepassMode::None:
         m_positionInvariance = false;
-        m_eliminateDepthPrepass = false;
+        m_clearDepthPrepass = false;
         break;
     case DepthPrepassMode::PositionInvariance:
         m_positionInvariance = true;
-        m_eliminateDepthPrepass = false;
+        m_clearDepthPrepass = false;
         break;
-    case DepthPrepassMode::Eliminate:
+    case DepthPrepassMode::Clear:
         m_positionInvariance = false;
-        m_eliminateDepthPrepass = true;
+        m_clearDepthPrepass = true;
         break;
     }
 
@@ -727,8 +727,10 @@ void MetalRenderer::rendertarget_deleteCachedFBO(LatteCachedFBO* cfbo)
 
 void MetalRenderer::rendertarget_bindFramebufferObject(LatteCachedFBO* cfbo)
 {
-	m_state.m_activeFBO = {(CachedFBOMtl*)cfbo, MetalAttachmentsInfo((CachedFBOMtl*)cfbo)};
+    auto activeFBO = static_cast<CachedFBOMtl*>(cfbo);
+	m_state.m_activeFBO = {activeFBO, MetalAttachmentsInfo(activeFBO)};
 	m_state.m_fboChanged = true;
+	activeFBO->CheckForDepthPrepassClear();
 }
 
 void* MetalRenderer::texture_acquireTextureUploadBuffer(uint32 size)
@@ -1110,14 +1112,6 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 		return;
 	}
 
-	// Eliminate depth prepass
-	if (m_state.m_activeFBO.m_fbo->EliminateDepthPrepass())
-	{
-	    printf("DEPTH PREPASS ELIMINATED\n");
-		cemuLog_logDebugOnce(LogType::Force, "Depth prepass eliminated");
-	    return;
-	}
-
 	auto& encoderState = m_state.m_encoderState;
 
     // Shaders
@@ -1218,18 +1212,18 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 	if (!m_state.m_activeFBO.m_fbo->hasDepthBuffer())
 	    depthControl.set_Z_WRITE_ENABLE(false);
 
-	// Depth prepass elimination
+	// Depth prepass clear
 	Latte::E_COMPAREFUNC depthFunc = depthControl.get_Z_FUNC();
-	if (m_eliminateDepthPrepass && m_state.m_activeFBO.m_fbo->hasDepthBuffer())
+	if (m_clearDepthPrepass && m_state.m_activeFBO.m_fbo->hasDepthBuffer())
 	{
 	    auto depthBuffer = static_cast<LatteTextureMtl*>(m_state.m_activeFBO.m_fbo->depthBuffer.texture->baseTexture);
-    	auto depthPrepassEliminationInfo = depthBuffer->GetDepthPrepassEliminationInfo();
-        // We need to restore the depth compare function as well as enable depth write to make sure there are no side effects of the depth prepass elimination
-    	if (depthPrepassEliminationInfo.eliminated)
+    	auto depthPrepassInfo = depthBuffer->GetDepthPrepassInfo();
+        // We need to restore the depth compare function as well as enable depth write to make sure there are no side effects of the depth prepass clear
+    	if (depthPrepassInfo.isDepthPrepass)
         {
             // TODO: always set depth func?
             if (depthFunc == Latte::E_COMPAREFUNC::EQUAL)
-       	        depthControl.set_Z_FUNC(depthPrepassEliminationInfo.depthFunc);
+       	        depthControl.set_Z_FUNC(depthPrepassInfo.depthFunc);
             depthControl.set_Z_WRITE_ENABLE(true);
         }
 	}
@@ -1793,6 +1787,8 @@ MTL::RenderCommandEncoder* MetalRenderer::GetRenderCommandEncoder(bool forceRecr
     bool fboChanged = m_state.m_fboChanged;
     m_state.m_fboChanged = false;
 
+    auto activeFBO = m_state.m_activeFBO.m_fbo;
+
     // Check if we need to begin a new render pass
     if (m_commandEncoder)
     {
@@ -1808,7 +1804,7 @@ MTL::RenderCommandEncoder* MetalRenderer::GetRenderCommandEncoder(bool forceRecr
                     {
                         for (uint8 i = 0; i < 8; i++)
                         {
-                            if (m_state.m_activeFBO.m_fbo->colorBuffer[i].texture && m_state.m_activeFBO.m_fbo->colorBuffer[i].texture != m_state.m_lastUsedFBO.m_fbo->colorBuffer[i].texture)
+                            if (activeFBO->colorBuffer[i].texture && activeFBO->colorBuffer[i].texture != m_state.m_lastUsedFBO.m_fbo->colorBuffer[i].texture)
                             {
                                 needsNewRenderPass = true;
                                 break;
@@ -1818,7 +1814,7 @@ MTL::RenderCommandEncoder* MetalRenderer::GetRenderCommandEncoder(bool forceRecr
 
                     if (!needsNewRenderPass)
                     {
-                        if (m_state.m_activeFBO.m_fbo->depthBuffer.texture && (m_state.m_activeFBO.m_fbo->depthBuffer.texture != m_state.m_lastUsedFBO.m_fbo->depthBuffer.texture || ( m_state.m_activeFBO.m_fbo->depthBuffer.hasStencil && !m_state.m_lastUsedFBO.m_fbo->depthBuffer.hasStencil)))
+                        if (activeFBO->depthBuffer.texture && (activeFBO->depthBuffer.texture != m_state.m_lastUsedFBO.m_fbo->depthBuffer.texture || ( activeFBO->depthBuffer.hasStencil && !m_state.m_lastUsedFBO.m_fbo->depthBuffer.hasStencil)))
                         {
                             needsNewRenderPass = true;
                         }
@@ -1837,12 +1833,19 @@ MTL::RenderCommandEncoder* MetalRenderer::GetRenderCommandEncoder(bool forceRecr
 
     auto commandBuffer = GetCommandBuffer();
 
-    auto renderCommandEncoder = commandBuffer->renderCommandEncoder(m_state.m_activeFBO.m_fbo->GetRenderPassDescriptor());
+    auto renderCommandEncoder = commandBuffer->renderCommandEncoder(activeFBO->GetRenderPassDescriptor());
 #ifdef CEMU_DEBUG_ASSERT
     renderCommandEncoder->setLabel(GetLabel("Render command encoder", renderCommandEncoder));
 #endif
     m_commandEncoder = renderCommandEncoder;
     m_encoderType = MetalEncoderType::Render;
+
+    // Depth prepass clear
+    if (m_clearDepthPrepass)
+    {
+        activeFBO->CheckForDepthPrepass();
+        activeFBO->NotifyDepthPrepassCleared();
+    }
 
     // Update state
     m_state.m_lastUsedFBO = m_state.m_activeFBO;

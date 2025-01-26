@@ -190,8 +190,3 @@ MTL::Texture* LatteTextureViewMtl::CreateSwizzledView(uint32 gpuSamplerSwizzle)
 
     return texture;
 }
-
-void LatteTextureViewMtl::NotifyDepthPrepassEliminated()
-{
-    m_baseTexture->NotifyDepthPrepassEliminated();
-}

@@ -1,5 +1,6 @@
 #include "Cafe/HW/Latte/Renderer/Metal/CachedFBOMtl.h"
 #include "Cafe/HW/Latte/Renderer/Metal/LatteTextureViewMtl.h"
+#include "Cafe/HW/Latte/Renderer/Metal/LatteTextureMtl.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
 
@@ -57,17 +58,17 @@ CachedFBOMtl::CachedFBOMtl(class MetalRenderer* metalRenderer, uint64 key) : Lat
 	// Visibility buffer
 	m_renderPassDescriptor->setVisibilityResultBuffer(metalRenderer->GetOcclusionQueryResultBuffer());
 
-	// Eliminate depth prepass
-	if (metalRenderer->EliminateDepthPrepass())
+	// Detect depth prepass
+	if (metalRenderer->ClearDepthPrepass())
 	{
-		// Must have a depth buffer
-	    if (hasDepthBuffer())
-		{
-		    // Filter out shadow maps
-			if (depthBuffer.texture->baseTexture->width != depthBuffer.texture->baseTexture->height)
-			{
-    		    bool hasColorBuffer = false;
-    			for (uint32 i = 0; i < LATTE_NUM_COLOR_TARGET; i++)
+        // Must have a depth buffer
+        if (hasDepthBuffer())
+    	{
+    	    // Filter out shadow maps
+    		if (depthBuffer.texture->baseTexture->width != depthBuffer.texture->baseTexture->height)
+    		{
+      		    bool hasColorBuffer = false;
+     			for (uint32 i = 0; i < LATTE_NUM_COLOR_TARGET; i++)
                 {
                     if (colorBuffer[i].texture)
                     {
@@ -79,16 +80,49 @@ CachedFBOMtl::CachedFBOMtl(class MetalRenderer* metalRenderer, uint64 key) : Lat
                 // Must not have a color buffer
                 if (!hasColorBuffer)
                 {
-                    auto textureView = static_cast<LatteTextureViewMtl*>(depthBuffer.texture);
-                    textureView->NotifyDepthPrepassEliminated();
-                    m_eliminateDepthPrepass = true;
+                    auto depthTexture = static_cast<LatteTextureMtl*>(depthBuffer.texture->baseTexture);
+                    depthTexture->NotifyIsDepthPrepass();
+                    m_isDepthPrepass = true;
                 }
-			}
-		}
-    }
+    		}
+    	}
+	}
 }
 
 CachedFBOMtl::~CachedFBOMtl()
 {
 	m_renderPassDescriptor->release();
+}
+
+void CachedFBOMtl::CheckForDepthPrepass()
+{
+    if (m_isDepthPrepass && hasDepthBuffer())
+    {
+        auto depthTexture = static_cast<LatteTextureMtl*>(depthBuffer.texture->baseTexture);
+        depthTexture->InitializeDepthPrepass();
+    }
+}
+
+void CachedFBOMtl::CheckForDepthPrepassClear()
+{
+    if (!m_isDepthPrepass && hasDepthBuffer())
+    {
+        auto depthTexture = static_cast<LatteTextureMtl*>(depthBuffer.texture->baseTexture);
+        if (depthTexture->GetDepthPrepassInfo().needsClear)
+        {
+            m_renderPassDescriptor->depthAttachment()->setLoadAction(MTL::LoadActionClear);
+            // TODO: set clear depth?
+            m_needsClear = true;
+        }
+    }
+}
+
+void CachedFBOMtl::NotifyDepthPrepassCleared()
+{
+    if (m_needsClear)
+    {
+        auto depthTexture = static_cast<LatteTextureMtl*>(depthBuffer.texture->baseTexture);
+        depthTexture->NotifyDepthPrepassCleared();
+        m_renderPassDescriptor->depthAttachment()->setLoadAction(MTL::LoadActionLoad);
+    }
 }

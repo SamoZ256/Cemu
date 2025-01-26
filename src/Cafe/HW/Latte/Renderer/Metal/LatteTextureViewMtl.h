@@ -21,8 +21,6 @@ public:
         return GetSwizzledView(RGBA_SWIZZLE);
     }
 
-    void NotifyDepthPrepassEliminated();
-
 private:
 	class MetalRenderer* m_mtlr;
 

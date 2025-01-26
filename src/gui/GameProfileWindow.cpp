@@ -144,7 +144,7 @@ GameProfileWindow::GameProfileWindow(wxWindow* parent, uint64_t title_id)
 
 		first_row->Add(new wxStaticText(panel, wxID_ANY, _("Depth prepass mode")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
 
-		wxString depth_values[] = { _("auto"), _("none"), _("position invariance"), _("eliminate") };
+		wxString depth_values[] = { _("auto"), _("none"), _("position invariance"), _("clear") };
 		m_depth_prepass_mode = new wxChoice(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, (int)std::size(depth_values), depth_values);
 		m_depth_prepass_mode->SetToolTip(_("EXPERT OPTION\nDecides how to handle a depth prepass.\n\nMetal only\n\nRecommended: auto"));
 		first_row->Add(m_depth_prepass_mode, 0, wxALL, 5);

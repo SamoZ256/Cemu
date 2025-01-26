@@ -138,9 +138,9 @@ enum class DepthPrepassMode
     Auto,
     None,
     PositionInvariance,
-    Eliminate,
+    Clear,
 };
-ENABLE_ENUM_ITERATORS(DepthPrepassMode, DepthPrepassMode::Auto, DepthPrepassMode::Eliminate);
+ENABLE_ENUM_ITERATORS(DepthPrepassMode, DepthPrepassMode::Auto, DepthPrepassMode::Clear);
 
 enum class CPUMode
 {
@@ -264,7 +264,7 @@ struct fmt::formatter<DepthPrepassMode> : formatter<string_view> {
 		case DepthPrepassMode::Auto: name = "auto"; break;
 		case DepthPrepassMode::None: name = "none"; break;
 		case DepthPrepassMode::PositionInvariance: name = "position invariance"; break;
-		case DepthPrepassMode::Eliminate: name = "eliminate"; break;
+		case DepthPrepassMode::Clear: name = "clear"; break;
 		default: name = "unknown"; break;
 		}
 		return formatter<string_view>::format(name, ctx);

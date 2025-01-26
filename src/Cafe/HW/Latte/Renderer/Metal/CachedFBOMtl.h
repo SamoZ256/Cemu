@@ -17,13 +17,15 @@ public:
 	    return m_renderPassDescriptor;
 	}
 
-	bool EliminateDepthPrepass() const
-    {
-        return m_eliminateDepthPrepass;
-    }
+	void CheckForDepthPrepass();
+
+	void CheckForDepthPrepassClear();
+
+	void NotifyDepthPrepassCleared();
 
 private:
     MTL::RenderPassDescriptor* m_renderPassDescriptor = nullptr;
 
-    bool m_eliminateDepthPrepass = false;
+    bool m_isDepthPrepass = false;
+    bool m_needsClear = false;
 };

@@ -107,8 +107,18 @@ void LatteTextureMtl::AllocateOnHost()
 	// The texture is already allocated
 }
 
-void LatteTextureMtl::NotifyDepthPrepassEliminated()
+void LatteTextureMtl::NotifyIsDepthPrepass()
 {
-    m_depthPrepassEliminationInfo.eliminated = true;
-    m_depthPrepassEliminationInfo.depthFunc = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_FUNC();
+    m_depthPrepassInfo.isDepthPrepass = true;
+}
+
+void LatteTextureMtl::InitializeDepthPrepass()
+{
+    m_depthPrepassInfo.needsClear = true;
+    m_depthPrepassInfo.depthFunc = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_FUNC();
+}
+
+void LatteTextureMtl::NotifyDepthPrepassCleared()
+{
+    m_depthPrepassInfo.needsClear = false;
 }

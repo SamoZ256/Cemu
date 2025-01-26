@@ -5,10 +5,11 @@
 #include "Cafe/HW/Latte/Core/LatteTexture.h"
 #include "HW/Latte/ISA/LatteReg.h"
 
-struct MetalDepthPrepassEliminationInfo
+struct MetalDepthPrepassInfo
 {
-    bool eliminated = false;
-    Latte::E_COMPAREFUNC depthFunc;
+    bool isDepthPrepass = false;
+    bool needsClear = false;
+    Latte::E_COMPAREFUNC depthFunc = Latte::E_COMPAREFUNC::ALWAYS;
 };
 
 class LatteTextureMtl : public LatteTexture
@@ -24,10 +25,14 @@ public:
 
 	void AllocateOnHost() override;
 
-	void NotifyDepthPrepassEliminated();
+	void NotifyIsDepthPrepass();
 
-	MetalDepthPrepassEliminationInfo GetDepthPrepassEliminationInfo() const {
-        return m_depthPrepassEliminationInfo;
+	void InitializeDepthPrepass();
+
+	void NotifyDepthPrepassCleared();
+
+	MetalDepthPrepassInfo GetDepthPrepassInfo() const {
+        return m_depthPrepassInfo;
     }
 
 protected:
@@ -38,5 +43,5 @@ private:
 
 	MTL::Texture* m_texture;
 
-	MetalDepthPrepassEliminationInfo m_depthPrepassEliminationInfo{};
+	MetalDepthPrepassInfo m_depthPrepassInfo{};
 };
