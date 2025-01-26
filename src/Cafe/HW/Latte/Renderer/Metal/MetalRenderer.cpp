@@ -186,7 +186,6 @@ MetalRenderer::MetalRenderer()
         m_eliminateDepthPrepass = true;
         break;
     }
-    printf("POSITION INVARIANCE: %u\nELIMINATE DEPTH PREPASS: %u\n", m_positionInvariance, m_eliminateDepthPrepass);
 
     // Command queue
     m_commandQueue = m_device->newCommandQueue();
@@ -1216,7 +1215,7 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 
 	// Depth write
 	bool depthWriteEnable = depthControl.get_Z_WRITE_ENABLE();
-	if (!m_state.m_activeFBO.m_fbo->depthBuffer.texture)
+	if (!m_state.m_activeFBO.m_fbo->hasDepthBuffer())
 	    depthControl.set_Z_WRITE_ENABLE(false);
 
 	// Depth prepass elimination
@@ -1226,9 +1225,11 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 	    auto depthBuffer = static_cast<LatteTextureMtl*>(m_state.m_activeFBO.m_fbo->depthBuffer.texture->baseTexture);
     	auto depthPrepassEliminationInfo = depthBuffer->GetDepthPrepassEliminationInfo();
         // We need to restore the depth compare function as well as enable depth write to make sure there are no side effects of the depth prepass elimination
-    	if (depthPrepassEliminationInfo.eliminated && depthFunc == Latte::E_COMPAREFUNC::EQUAL)
+    	if (depthPrepassEliminationInfo.eliminated)
         {
-    	    depthControl.set_Z_FUNC(depthPrepassEliminationInfo.depthFunc);
+            // TODO: always set depth func?
+            if (depthFunc == Latte::E_COMPAREFUNC::EQUAL)
+       	        depthControl.set_Z_FUNC(depthPrepassEliminationInfo.depthFunc);
             depthControl.set_Z_WRITE_ENABLE(true);
         }
 	}
