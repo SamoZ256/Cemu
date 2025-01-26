@@ -133,13 +133,14 @@ enum class BufferCacheMode
 };
 ENABLE_ENUM_ITERATORS(BufferCacheMode, BufferCacheMode::Auto, BufferCacheMode::Host);
 
-enum class PositionInvariance
+enum class DepthPrepassMode
 {
     Auto,
-    False,
-    True,
+    None,
+    PositionInvariance,
+    Eliminate,
 };
-ENABLE_ENUM_ITERATORS(PositionInvariance, PositionInvariance::False, PositionInvariance::True);
+ENABLE_ENUM_ITERATORS(DepthPrepassMode, DepthPrepassMode::Auto, DepthPrepassMode::Eliminate);
 
 enum class CPUMode
 {
@@ -150,7 +151,6 @@ enum class CPUMode
 	Auto = 4,
 };
 ENABLE_ENUM_ITERATORS(CPUMode, CPUMode::SinglecoreInterpreter, CPUMode::Auto);
-
 
 enum class CPUModeLegacy
 {
@@ -255,15 +255,16 @@ struct fmt::formatter<BufferCacheMode> : formatter<string_view> {
 	}
 };
 template <>
-struct fmt::formatter<PositionInvariance> : formatter<string_view> {
+struct fmt::formatter<DepthPrepassMode> : formatter<string_view> {
 	template <typename FormatContext>
-	auto format(const PositionInvariance c, FormatContext &ctx) const {
+	auto format(const DepthPrepassMode c, FormatContext &ctx) const {
 		string_view name;
 		switch (c)
 		{
-		case PositionInvariance::Auto: name = "auto"; break;
-		case PositionInvariance::False: name = "false"; break;
-		case PositionInvariance::True: name = "true"; break;
+		case DepthPrepassMode::Auto: name = "auto"; break;
+		case DepthPrepassMode::None: name = "none"; break;
+		case DepthPrepassMode::PositionInvariance: name = "position invariance"; break;
+		case DepthPrepassMode::Eliminate: name = "eliminate"; break;
 		default: name = "unknown"; break;
 		}
 		return formatter<string_view>::format(name, ctx);

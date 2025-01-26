@@ -142,12 +142,12 @@ GameProfileWindow::GameProfileWindow(wxWindow* parent, uint64_t title_id)
 		m_buffer_cache_mode->SetToolTip(_("EXPERT OPTION\nDecides how the buffer cache memory will be managed.\n\nMetal only\n\nRecommended: auto"));
 		first_row->Add(m_buffer_cache_mode, 0, wxALL, 5);
 
-		first_row->Add(new wxStaticText(panel, wxID_ANY, _("Position invariance")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+		first_row->Add(new wxStaticText(panel, wxID_ANY, _("Depth prepass mode")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
 
-		wxString pos_values[] = { _("auto"), _("false"), _("true") };
-		m_position_invariance = new wxChoice(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, (int)std::size(pos_values), pos_values);
-		m_position_invariance->SetToolTip(_("EXPERT OPTION\nDisables most optimizations for vertex positions. May fix polygon cutouts or flickering in some games.\n\nMetal only\n\nRecommended: auto"));
-		first_row->Add(m_position_invariance, 0, wxALL, 5);
+		wxString depth_values[] = { _("auto"), _("none"), _("position invariance"), _("eliminate") };
+		m_depth_prepass_mode = new wxChoice(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, (int)std::size(depth_values), depth_values);
+		m_depth_prepass_mode->SetToolTip(_("EXPERT OPTION\nDecides how to handle a depth prepass.\n\nMetal only\n\nRecommended: auto"));
+		first_row->Add(m_depth_prepass_mode, 0, wxALL, 5);
 
 		/*first_row->Add(new wxStaticText(panel, wxID_ANY, _("GPU buffer cache accuracy")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
 		wxString accuarcy_values[] = { _("high"), _("medium"), _("low") };
@@ -297,7 +297,7 @@ void GameProfileWindow::ApplyProfile()
 	m_shader_mul_accuracy->SetSelection((int)m_game_profile.m_accurateShaderMul);
 	m_fast_math->SetSelection((int)m_game_profile.m_fastMath);
 	m_buffer_cache_mode->SetSelection((int)m_game_profile.m_bufferCacheMode);
-	m_position_invariance->SetSelection((int)m_game_profile.m_positionInvariance);
+	m_depth_prepass_mode->SetSelection((int)m_game_profile.m_depthPrepassMode);
 
 	//// audio
 	//m_disable_audio->Set3StateValue(GetCheckboxState(m_game_profile.disableAudio));
@@ -361,7 +361,7 @@ void GameProfileWindow::SaveProfile()
 		m_game_profile.m_accurateShaderMul = AccurateShaderMulOption::True; // force a legal value
 	m_game_profile.m_fastMath = (bool)m_fast_math->GetSelection();
 	m_game_profile.m_bufferCacheMode = (BufferCacheMode)m_buffer_cache_mode->GetSelection();
-	m_game_profile.m_positionInvariance = (PositionInvariance)m_position_invariance->GetSelection();
+	m_game_profile.m_depthPrepassMode = (DepthPrepassMode)m_depth_prepass_mode->GetSelection();
 
 	if (m_graphic_api->GetSelection() == 0)
 		m_game_profile.m_graphics_api = {};

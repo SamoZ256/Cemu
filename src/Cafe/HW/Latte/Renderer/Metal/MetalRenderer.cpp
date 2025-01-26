@@ -57,9 +57,9 @@ MetalRenderer::MetalRenderer()
     // Options
 
     // Position invariance
-    switch (g_current_game_profile->GetPositionInvariance())
+    switch (g_current_game_profile->GetDepthPrepassMode())
     {
-    case PositionInvariance::Auto:
+    case DepthPrepassMode::Auto:
         switch (CafeSystem::GetForegroundTitleId())
         {
         // Minecraft: Story Mode
@@ -103,18 +103,34 @@ MetalRenderer::MetalRenderer()
         case 0x000500001012DC00: // USA
         case 0x0005000010116300: // JPN
         case 0x0005000010185600: // JPN (TODO: check)
-            m_positionInvariance = true;
+            if (m_isAppleGPU)
+            {
+                m_positionInvariance = false;
+                m_eliminateDepthPrepass = true;
+            }
+            else
+            {
+                m_positionInvariance = true; // TODO: is position invariance necessary on non-Apple GPUs?
+                m_eliminateDepthPrepass = false;
+            }
             break;
         default:
             m_positionInvariance = false;
+            m_eliminateDepthPrepass = false;
             break;
         }
         break;
-    case PositionInvariance::False:
+    case DepthPrepassMode::None:
         m_positionInvariance = false;
+        m_eliminateDepthPrepass = false;
         break;
-    case PositionInvariance::True:
+    case DepthPrepassMode::PositionInvariance:
         m_positionInvariance = true;
+        m_eliminateDepthPrepass = false;
+        break;
+    case DepthPrepassMode::Eliminate:
+        m_positionInvariance = false;
+        m_eliminateDepthPrepass = true;
         break;
     }
 
