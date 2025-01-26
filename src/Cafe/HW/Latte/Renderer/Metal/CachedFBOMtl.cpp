@@ -59,7 +59,7 @@ CachedFBOMtl::CachedFBOMtl(class MetalRenderer* metalRenderer, uint64 key) : Lat
 	m_renderPassDescriptor->setVisibilityResultBuffer(metalRenderer->GetOcclusionQueryResultBuffer());
 
 	// Detect depth prepass
-	if (metalRenderer->ClearDepthPrepass())
+	if (metalRenderer->DepthPrepassBias())
 	{
         // Must have a depth buffer
         if (hasDepthBuffer())
@@ -94,35 +94,11 @@ CachedFBOMtl::~CachedFBOMtl()
 	m_renderPassDescriptor->release();
 }
 
-void CachedFBOMtl::CheckForDepthPrepass()
+void CachedFBOMtl::CheckForDepthPrepassFunc()
 {
-    if (m_isDepthPrepass && hasDepthBuffer())
+    if (m_isDepthPrepass)
     {
         auto depthTexture = static_cast<LatteTextureMtl*>(depthBuffer.texture->baseTexture);
-        depthTexture->InitializeDepthPrepass();
-    }
-}
-
-void CachedFBOMtl::CheckForDepthPrepassClear()
-{
-    if (!m_isDepthPrepass && hasDepthBuffer())
-    {
-        auto depthTexture = static_cast<LatteTextureMtl*>(depthBuffer.texture->baseTexture);
-        if (depthTexture->GetDepthPrepassInfo().needsClear)
-        {
-            m_renderPassDescriptor->depthAttachment()->setLoadAction(MTL::LoadActionClear);
-            // TODO: set clear depth?
-            m_needsClear = true;
-        }
-    }
-}
-
-void CachedFBOMtl::NotifyDepthPrepassCleared()
-{
-    if (m_needsClear)
-    {
-        auto depthTexture = static_cast<LatteTextureMtl*>(depthBuffer.texture->baseTexture);
-        depthTexture->NotifyDepthPrepassCleared();
-        m_renderPassDescriptor->depthAttachment()->setLoadAction(MTL::LoadActionLoad);
+        depthTexture->CheckForDepthPrepassFunc();
     }
 }

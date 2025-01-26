@@ -365,9 +365,9 @@ public:
         return m_positionInvariance;
     }
 
-    bool ClearDepthPrepass() const
+    bool DepthPrepassBias() const
     {
-        return m_clearDepthPrepass;
+        return m_depthPrepassBias;
     }
 
     bool IsAppleGPU() const
@@ -478,7 +478,7 @@ private:
 
 	// Options
 	bool m_positionInvariance;
-	bool m_clearDepthPrepass;
+	bool m_depthPrepassBias;
 
 	// Metal objects
 	MTL::Device* m_device = nullptr;

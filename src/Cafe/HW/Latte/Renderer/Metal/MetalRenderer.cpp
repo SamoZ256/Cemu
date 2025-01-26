@@ -159,31 +159,31 @@ MetalRenderer::MetalRenderer()
             if (m_isAppleGPU)
             {
                 m_positionInvariance = false;
-                m_clearDepthPrepass = true;
+                m_depthPrepassBias = true;
             }
             else
             {
                 m_positionInvariance = true; // TODO: is position invariance necessary on non-Apple GPUs?
-                m_clearDepthPrepass = false;
+                m_depthPrepassBias = false;
             }
             break;
         default:
             m_positionInvariance = false;
-            m_clearDepthPrepass = false;
+            m_depthPrepassBias = false;
             break;
         }
         break;
     case DepthPrepassMode::None:
         m_positionInvariance = false;
-        m_clearDepthPrepass = false;
+        m_depthPrepassBias = false;
         break;
     case DepthPrepassMode::PositionInvariance:
         m_positionInvariance = true;
-        m_clearDepthPrepass = false;
+        m_depthPrepassBias = false;
         break;
-    case DepthPrepassMode::Clear:
+    case DepthPrepassMode::DepthBias:
         m_positionInvariance = false;
-        m_clearDepthPrepass = true;
+        m_depthPrepassBias = true;
         break;
     }
 
@@ -730,7 +730,6 @@ void MetalRenderer::rendertarget_bindFramebufferObject(LatteCachedFBO* cfbo)
     auto activeFBO = static_cast<CachedFBOMtl*>(cfbo);
 	m_state.m_activeFBO = {activeFBO, MetalAttachmentsInfo(activeFBO)};
 	m_state.m_fboChanged = true;
-	activeFBO->CheckForDepthPrepassClear();
 }
 
 void* MetalRenderer::texture_acquireTextureUploadBuffer(uint32 size)
@@ -1212,14 +1211,14 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 	if (!m_state.m_activeFBO.m_fbo->hasDepthBuffer())
 	    depthControl.set_Z_WRITE_ENABLE(false);
 
-	// Depth prepass clear
+	// Depth prepass bias
 	Latte::E_COMPAREFUNC depthFunc = depthControl.get_Z_FUNC();
-	if (m_clearDepthPrepass && m_state.m_activeFBO.m_fbo->hasDepthBuffer())
+	if (m_depthPrepassBias && m_state.m_activeFBO.m_fbo->hasDepthBuffer())
 	{
 	    auto depthBuffer = static_cast<LatteTextureMtl*>(m_state.m_activeFBO.m_fbo->depthBuffer.texture->baseTexture);
     	auto depthPrepassInfo = depthBuffer->GetDepthPrepassInfo();
         // We need to restore the depth compare function as well as enable depth write to make sure there are no side effects of the depth prepass clear
-    	if (depthPrepassInfo.isDepthPrepass)
+    	if (!m_state.m_activeFBO.m_fbo->IsDepthPrepass() && depthPrepassInfo.isInDepthPrepass)
         {
             // TODO: always set depth func?
             if (depthFunc == Latte::E_COMPAREFUNC::EQUAL)
@@ -1274,23 +1273,32 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
         encoderState.m_blendColor[3] = blendColorConstantU32[3];
 	}
 
-	// polygon control
-	const auto& polygonControlReg = LatteGPUState.contextNew.PA_SU_SC_MODE_CNTL;
+	// Polygon control
+	auto& polygonControlReg = LatteGPUState.contextNew.PA_SU_SC_MODE_CNTL;
 	const auto frontFace = polygonControlReg.get_FRONT_FACE();
 	uint32 cullFront = polygonControlReg.get_CULL_FRONT();
 	uint32 cullBack = polygonControlReg.get_CULL_BACK();
 	uint32 polyOffsetFrontEnable = polygonControlReg.get_OFFSET_FRONT_ENABLED();
 
+	// Depth bias
+	auto frontOffsetReg = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_OFFSET;
+	if (m_depthPrepassBias && m_state.m_activeFBO.m_fbo->IsDepthPrepass())
+	{
+	    polyOffsetFrontEnable = true;
+	    frontOffsetReg.set_OFFSET(frontOffsetReg.get_OFFSET() + 0.001f);
+		m_state.m_activeFBO.m_fbo->CheckForDepthPrepassFunc();
+	}
+
 	if (polyOffsetFrontEnable)
 	{
     	uint32 frontScaleU32 = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_SCALE.getRawValue();
-    	uint32 frontOffsetU32 = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_OFFSET.getRawValue();
+    	uint32 frontOffsetU32 = frontOffsetReg.getRawValue();
     	uint32 offsetClampU32 = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_CLAMP.getRawValue();
 
         if (frontOffsetU32 != encoderState.m_depthBias || frontScaleU32 != encoderState.m_depthSlope || offsetClampU32 != encoderState.m_depthClamp)
         {
            	float frontScale = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_SCALE.get_SCALE();
-           	float frontOffset = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_FRONT_OFFSET.get_OFFSET();
+           	float frontOffset = frontOffsetReg.get_OFFSET();
            	float offsetClamp = LatteGPUState.contextNew.PA_SU_POLY_OFFSET_CLAMP.get_CLAMP();
 
            	frontScale /= 16.0f;
@@ -1839,13 +1847,6 @@ MTL::RenderCommandEncoder* MetalRenderer::GetRenderCommandEncoder(bool forceRecr
 #endif
     m_commandEncoder = renderCommandEncoder;
     m_encoderType = MetalEncoderType::Render;
-
-    // Depth prepass clear
-    if (m_clearDepthPrepass)
-    {
-        activeFBO->CheckForDepthPrepass();
-        activeFBO->NotifyDepthPrepassCleared();
-    }
 
     // Update state
     m_state.m_lastUsedFBO = m_state.m_activeFBO;

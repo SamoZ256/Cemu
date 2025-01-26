@@ -109,16 +109,10 @@ void LatteTextureMtl::AllocateOnHost()
 
 void LatteTextureMtl::NotifyIsDepthPrepass()
 {
-    m_depthPrepassInfo.isDepthPrepass = true;
+    m_depthPrepassInfo.isInDepthPrepass = true;
 }
 
-void LatteTextureMtl::InitializeDepthPrepass()
+void LatteTextureMtl::CheckForDepthPrepassFunc()
 {
-    m_depthPrepassInfo.needsClear = true;
     m_depthPrepassInfo.depthFunc = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_FUNC();
-}
-
-void LatteTextureMtl::NotifyDepthPrepassCleared()
-{
-    m_depthPrepassInfo.needsClear = false;
 }

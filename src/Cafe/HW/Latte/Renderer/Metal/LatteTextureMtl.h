@@ -3,12 +3,11 @@
 #include <Metal/Metal.hpp>
 
 #include "Cafe/HW/Latte/Core/LatteTexture.h"
-#include "HW/Latte/ISA/LatteReg.h"
+#include "Cafe/HW/Latte/ISA/LatteReg.h"
 
 struct MetalDepthPrepassInfo
 {
-    bool isDepthPrepass = false;
-    bool needsClear = false;
+    bool isInDepthPrepass = false;
     Latte::E_COMPAREFUNC depthFunc = Latte::E_COMPAREFUNC::ALWAYS;
 };
 
@@ -27,9 +26,7 @@ public:
 
 	void NotifyIsDepthPrepass();
 
-	void InitializeDepthPrepass();
-
-	void NotifyDepthPrepassCleared();
+	void CheckForDepthPrepassFunc();
 
 	MetalDepthPrepassInfo GetDepthPrepassInfo() const {
         return m_depthPrepassInfo;
