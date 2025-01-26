@@ -2,6 +2,7 @@
 #include "Cafe/HW/Latte/Renderer/Metal/LatteTextureViewMtl.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
+#include "HW/Latte/Core/Latte.h"
 
 LatteTextureMtl::LatteTextureMtl(class MetalRenderer* mtlRenderer, Latte::E_DIM dim, MPTR physAddress, MPTR physMipAddress, Latte::E_GX2SURFFMT format, uint32 width, uint32 height, uint32 depth, uint32 pitch, uint32 mipLevels, uint32 swizzle,
 	Latte::E_HWTILEMODE tileMode, bool isDepth)
@@ -104,4 +105,10 @@ LatteTextureView* LatteTextureMtl::CreateView(Latte::E_DIM dim, Latte::E_GX2SURF
 void LatteTextureMtl::AllocateOnHost()
 {
 	// The texture is already allocated
+}
+
+void LatteTextureMtl::NotifyDepthPrepassEliminated()
+{
+    m_depthPrepassEliminationInfo.eliminated = true;
+    m_depthPrepassEliminationInfo.depthFunc = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_Z_FUNC();
 }

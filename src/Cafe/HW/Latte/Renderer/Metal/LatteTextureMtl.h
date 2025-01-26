@@ -4,7 +4,12 @@
 
 #include "Cafe/HW/Latte/Core/LatteTexture.h"
 #include "HW/Latte/ISA/LatteReg.h"
-#include "util/ChunkedHeap/ChunkedHeap.h"
+
+struct MetalDepthPrepassEliminationInfo
+{
+    bool eliminated = false;
+    Latte::E_COMPAREFUNC depthFunc;
+};
 
 class LatteTextureMtl : public LatteTexture
 {
@@ -19,6 +24,12 @@ public:
 
 	void AllocateOnHost() override;
 
+	void NotifyDepthPrepassEliminated();
+
+	MetalDepthPrepassEliminationInfo GetDepthPrepassEliminationInfo() const {
+        return m_depthPrepassEliminationInfo;
+    }
+
 protected:
 	LatteTextureView* CreateView(Latte::E_DIM dim, Latte::E_GX2SURFFMT format, sint32 firstMip, sint32 mipCount, sint32 firstSlice, sint32 sliceCount) override;
 
@@ -26,4 +37,6 @@ private:
 	class MetalRenderer* m_mtlr;
 
 	MTL::Texture* m_texture;
+
+	MetalDepthPrepassEliminationInfo m_depthPrepassEliminationInfo{};
 };

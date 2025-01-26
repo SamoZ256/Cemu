@@ -45,7 +45,7 @@ CachedFBOMtl::CachedFBOMtl(class MetalRenderer* metalRenderer, uint64 key) : Lat
 		hasAttachment = true;
 	}
 
-	// HACK: setup a dummy color attachment to prevent Metal from discarding draws for stremout draws in Super Smash Bros. for Wii U (works fine on MoltenVK without this hack though)
+	// HACK: setup a dummy color attachment to prevent Metal from discarding draws for streamout draws in Super Smash Bros. for Wii U (works fine on MoltenVK without this hack though)
 	if (!hasAttachment)
 	{
         auto colorAttachment = m_renderPassDescriptor->colorAttachments()->object(0);
@@ -64,7 +64,7 @@ CachedFBOMtl::CachedFBOMtl(class MetalRenderer* metalRenderer, uint64 key) : Lat
 	    if (hasDepthBuffer())
 		{
 		    // Filter out shadow maps
-			if (depthBuffer.texture->baseTexture->width != colorBuffer[0].texture->baseTexture->width)
+			if (depthBuffer.texture->baseTexture->width != depthBuffer.texture->baseTexture->height)
 			{
     		    bool hasColorBuffer = false;
     			for (uint32 i = 0; i < LATTE_NUM_COLOR_TARGET; i++)
@@ -79,8 +79,9 @@ CachedFBOMtl::CachedFBOMtl(class MetalRenderer* metalRenderer, uint64 key) : Lat
                 // Must not have a color buffer
                 if (!hasColorBuffer)
                 {
-                    // TODO: inform the depth buffer about depth prepass elimination
-                    return;
+                    auto textureView = static_cast<LatteTextureViewMtl*>(depthBuffer.texture);
+                    textureView->NotifyDepthPrepassEliminated();
+                    m_eliminateDepthPrepass = true;
                 }
 			}
 		}

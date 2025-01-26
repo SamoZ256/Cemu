@@ -2,6 +2,7 @@
 #include "Cafe/HW/Latte/Renderer/Metal/LatteTextureMtl.h"
 #include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
 #include "Cafe/HW/Latte/Renderer/Metal/LatteToMtl.h"
+#include "HW/Latte/Core/LatteTextureView.h"
 #include "Metal/MTLTexture.hpp"
 
 uint32 LatteTextureMtl_AdjustTextureCompSel(Latte::E_GX2SURFFMT format, uint32 compSel)
@@ -188,4 +189,9 @@ MTL::Texture* LatteTextureViewMtl::CreateSwizzledView(uint32 gpuSamplerSwizzle)
     MTL::Texture* texture = m_baseTexture->GetTexture()->newTextureView(pixelFormat, textureType, NS::Range::Make(baseLevel, levelCount), NS::Range::Make(baseLayer, layerCount), swizzle);
 
     return texture;
+}
+
+void LatteTextureViewMtl::NotifyDepthPrepassEliminated()
+{
+    m_baseTexture->NotifyDepthPrepassEliminated();
 }

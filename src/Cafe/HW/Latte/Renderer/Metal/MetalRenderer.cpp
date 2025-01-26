@@ -21,6 +21,7 @@
 #include "Cemu/Logging/CemuLogging.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteConst.h"
+#include "HW/Latte/ISA/LatteReg.h"
 #include "HW/Latte/Renderer/Metal/MetalCommon.h"
 #include "config/CemuConfig.h"
 #include "gui/guiWrapper.h"
@@ -54,6 +55,58 @@ std::vector<MetalRenderer::DeviceInfo> MetalRenderer::GetDevices()
 
 MetalRenderer::MetalRenderer()
 {
+    // Pick a device
+    auto& config = GetConfig();
+    const bool hasDeviceSet = config.mtl_graphic_device_uuid != 0;
+
+    // If a device is set, try to find it
+    if (hasDeviceSet)
+    {
+        NS_STACK_SCOPED auto devices = MTL::CopyAllDevices();
+        for (uint32 i = 0; i < devices->count(); i++)
+        {
+            MTL::Device* device = static_cast<MTL::Device*>(devices->object(i));
+            if (device->registryID() == config.mtl_graphic_device_uuid)
+            {
+                m_device = device;
+                break;
+            }
+        }
+    }
+
+    if (!m_device)
+    {
+        if (hasDeviceSet)
+        {
+            cemuLog_log(LogType::Force, "The selected GPU ({}) could not be found. Using the system default device.", config.mtl_graphic_device_uuid);
+            config.mtl_graphic_device_uuid = 0;
+        }
+        // Use the system default device
+        m_device = MTL::CreateSystemDefaultDevice();
+    }
+
+    // Vendor
+    const char* deviceName = m_device->name()->utf8String();
+    if (memcmp(deviceName, "Apple", 5) == 0)
+        m_vendor = GfxVendor::Apple;
+    else if (memcmp(deviceName, "AMD", 3) == 0)
+        m_vendor = GfxVendor::AMD;
+    else if (memcmp(deviceName, "Intel", 5) == 0)
+        m_vendor = GfxVendor::Intel;
+    else if (memcmp(deviceName, "NVIDIA", 6) == 0)
+        m_vendor = GfxVendor::Nvidia;
+    else
+        m_vendor = GfxVendor::Generic;
+
+    // Feature support
+    m_isAppleGPU = m_device->supportsFamily(MTL::GPUFamilyApple1);
+    m_supportsFramebufferFetch = GetConfig().framebuffer_fetch.GetValue() ? m_device->supportsFamily(MTL::GPUFamilyApple2) : false;
+    m_hasUnifiedMemory = m_device->hasUnifiedMemory();
+    m_supportsMetal3 = m_device->supportsFamily(MTL::GPUFamilyMetal3);
+    m_recommendedMaxVRAMUsage = m_device->recommendedMaxWorkingSetSize();
+    m_pixelFormatSupport = MetalPixelFormatSupport(m_device);
+
+    CheckForPixelFormatSupport(m_pixelFormatSupport);
     // Options
 
     // Depth prepass mode
@@ -133,59 +186,7 @@ MetalRenderer::MetalRenderer()
         m_eliminateDepthPrepass = true;
         break;
     }
-
-    // Pick a device
-    auto& config = GetConfig();
-    const bool hasDeviceSet = config.mtl_graphic_device_uuid != 0;
-
-    // If a device is set, try to find it
-    if (hasDeviceSet)
-    {
-        NS_STACK_SCOPED auto devices = MTL::CopyAllDevices();
-        for (uint32 i = 0; i < devices->count(); i++)
-        {
-            MTL::Device* device = static_cast<MTL::Device*>(devices->object(i));
-            if (device->registryID() == config.mtl_graphic_device_uuid)
-            {
-                m_device = device;
-                break;
-            }
-        }
-    }
-
-    if (!m_device)
-    {
-        if (hasDeviceSet)
-        {
-            cemuLog_log(LogType::Force, "The selected GPU ({}) could not be found. Using the system default device.", config.mtl_graphic_device_uuid);
-            config.mtl_graphic_device_uuid = 0;
-        }
-        // Use the system default device
-        m_device = MTL::CreateSystemDefaultDevice();
-    }
-
-    // Vendor
-    const char* deviceName = m_device->name()->utf8String();
-    if (memcmp(deviceName, "Apple", 5) == 0)
-        m_vendor = GfxVendor::Apple;
-    else if (memcmp(deviceName, "AMD", 3) == 0)
-        m_vendor = GfxVendor::AMD;
-    else if (memcmp(deviceName, "Intel", 5) == 0)
-        m_vendor = GfxVendor::Intel;
-    else if (memcmp(deviceName, "NVIDIA", 6) == 0)
-        m_vendor = GfxVendor::Nvidia;
-    else
-        m_vendor = GfxVendor::Generic;
-
-    // Feature support
-    m_isAppleGPU = m_device->supportsFamily(MTL::GPUFamilyApple1);
-    m_supportsFramebufferFetch = GetConfig().framebuffer_fetch.GetValue() ? m_device->supportsFamily(MTL::GPUFamilyApple2) : false;
-    m_hasUnifiedMemory = m_device->hasUnifiedMemory();
-    m_supportsMetal3 = m_device->supportsFamily(MTL::GPUFamilyMetal3);
-    m_recommendedMaxVRAMUsage = m_device->recommendedMaxWorkingSetSize();
-    m_pixelFormatSupport = MetalPixelFormatSupport(m_device);
-
-    CheckForPixelFormatSupport(m_pixelFormatSupport);
+    printf("POSITION INVARIANCE: %u\nELIMINATE DEPTH PREPASS: %u\n", m_positionInvariance, m_eliminateDepthPrepass);
 
     // Command queue
     m_commandQueue = m_device->newCommandQueue();
@@ -1112,7 +1113,11 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 
 	// Eliminate depth prepass
 	if (m_state.m_activeFBO.m_fbo->EliminateDepthPrepass())
+	{
+	    printf("DEPTH PREPASS ELIMINATED\n");
+		cemuLog_logDebugOnce(LogType::Force, "Depth prepass eliminated");
 	    return;
+	}
 
 	auto& encoderState = m_state.m_encoderState;
 
@@ -1208,9 +1213,25 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 
 	// Disable depth write when there is no depth attachment
 	auto& depthControl = LatteGPUState.contextNew.DB_DEPTH_CONTROL;
+
+	// Depth write
 	bool depthWriteEnable = depthControl.get_Z_WRITE_ENABLE();
 	if (!m_state.m_activeFBO.m_fbo->depthBuffer.texture)
 	    depthControl.set_Z_WRITE_ENABLE(false);
+
+	// Depth prepass elimination
+	Latte::E_COMPAREFUNC depthFunc = depthControl.get_Z_FUNC();
+	if (m_eliminateDepthPrepass && m_state.m_activeFBO.m_fbo->hasDepthBuffer())
+	{
+	    auto depthBuffer = static_cast<LatteTextureMtl*>(m_state.m_activeFBO.m_fbo->depthBuffer.texture->baseTexture);
+    	auto depthPrepassEliminationInfo = depthBuffer->GetDepthPrepassEliminationInfo();
+        // We need to restore the depth compare function as well as enable depth write to make sure there are no side effects of the depth prepass elimination
+    	if (depthPrepassEliminationInfo.eliminated && depthFunc == Latte::E_COMPAREFUNC::EQUAL)
+        {
+    	    depthControl.set_Z_FUNC(depthPrepassEliminationInfo.depthFunc);
+            depthControl.set_Z_WRITE_ENABLE(true);
+        }
+	}
 
 	MTL::DepthStencilState* depthStencilState = m_depthStencilCache->GetDepthStencilState(LatteGPUState.contextNew);
 	if (depthStencilState != encoderState.m_depthStencilState)
@@ -1219,8 +1240,9 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 		encoderState.m_depthStencilState = depthStencilState;
 	}
 
-	// Restore the original depth write state
+	// Restore the original depth state
 	depthControl.set_Z_WRITE_ENABLE(depthWriteEnable);
+	depthControl.set_Z_FUNC(depthFunc);
 
 	// Stencil reference
 	bool stencilEnable = LatteGPUState.contextNew.DB_DEPTH_CONTROL.get_STENCIL_ENABLE();
