@@ -56,6 +56,35 @@ CachedFBOMtl::CachedFBOMtl(class MetalRenderer* metalRenderer, uint64 key) : Lat
 
 	// Visibility buffer
 	m_renderPassDescriptor->setVisibilityResultBuffer(metalRenderer->GetOcclusionQueryResultBuffer());
+
+	// Eliminate depth prepass
+	if (metalRenderer->EliminateDepthPrepass())
+	{
+		// Must have a depth buffer
+	    if (hasDepthBuffer())
+		{
+		    // Filter out shadow maps
+			if (depthBuffer.texture->baseTexture->width != colorBuffer[0].texture->baseTexture->width)
+			{
+    		    bool hasColorBuffer = false;
+    			for (uint32 i = 0; i < LATTE_NUM_COLOR_TARGET; i++)
+                {
+                    if (colorBuffer[i].texture)
+                    {
+                        hasColorBuffer = true;
+                        break;
+                    }
+                }
+
+                // Must not have a color buffer
+                if (!hasColorBuffer)
+                {
+                    // TODO: inform the depth buffer about depth prepass elimination
+                    return;
+                }
+			}
+		}
+    }
 }
 
 CachedFBOMtl::~CachedFBOMtl()

@@ -56,7 +56,7 @@ MetalRenderer::MetalRenderer()
 {
     // Options
 
-    // Position invariance
+    // Depth prepass mode
     switch (g_current_game_profile->GetDepthPrepassMode())
     {
     case DepthPrepassMode::Auto:
@@ -1109,6 +1109,10 @@ void MetalRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 
 		LatteGPUState.drawCallCounter++;
 		return;
 	}
+
+	// Eliminate depth prepass
+	if (m_state.m_activeFBO.m_fbo->EliminateDepthPrepass())
+	    return;
 
 	auto& encoderState = m_state.m_encoderState;
 
