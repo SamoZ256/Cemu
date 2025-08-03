@@ -348,10 +348,17 @@ bool MetalPipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool
         auto desc = static_cast<MTL::MeshRenderPipelineDescriptor*>(m_pipelineDescriptor);
 
         // Shaders
-        desc->setObjectFunction(m_vertexShaderMtl->GetFunction());
-        desc->setMeshFunction(m_geometryShaderMtl->GetFunction());
-        if (m_rasterizationEnabled)
-            desc->setFragmentFunction(m_pixelShaderMtl->GetFunction());
+        if(m_vertexShaderMtl != nullptr){
+            desc->setObjectFunction(m_vertexShaderMtl->GetFunction());
+        }
+        if(m_geometryShaderMtl != nullptr){
+            desc->setMeshFunction(m_geometryShaderMtl->GetFunction());
+        }
+        if (m_rasterizationEnabled){
+            if(m_pixelShaderMtl != nullptr){
+                desc->setFragmentFunction(m_pixelShaderMtl->GetFunction());
+            }
+        }
 
 #ifdef CEMU_DEBUG_ASSERT
         desc->setLabel(GetLabel("Mesh render pipeline state", desc));
@@ -363,9 +370,14 @@ bool MetalPipelineCompiler::Compile(bool forceCompile, bool isRenderThread, bool
         auto desc = static_cast<MTL::RenderPipelineDescriptor*>(m_pipelineDescriptor);
 
         // Shaders
-        desc->setVertexFunction(m_vertexShaderMtl->GetFunction());
-        if (m_rasterizationEnabled)
-            desc->setFragmentFunction(m_pixelShaderMtl->GetFunction());
+        if(m_vertexShaderMtl != nullptr){
+            desc->setVertexFunction(m_vertexShaderMtl->GetFunction());
+        }
+        if (m_rasterizationEnabled){
+            if(m_pixelShaderMtl != nullptr){
+                desc->setFragmentFunction(m_pixelShaderMtl->GetFunction());
+            }
+        }
 
 #ifdef CEMU_DEBUG_ASSERT
         desc->setLabel(GetLabel("Render pipeline state", desc));

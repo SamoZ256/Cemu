@@ -1047,7 +1047,7 @@ void DownloadManager::calcPackageDownloadProgress(Package* package)
 {
 	if (package->state.currentState == Package::STATE::DOWNLOADING)
 	{
-		uint64 totalSize = 0;
+		uint64 totalSize = 1;
 		uint64 totalDownloaded = 0;
 		for (auto& itr : package->state.contentFiles)
 		{
@@ -1057,7 +1057,6 @@ void DownloadManager::calcPackageDownloadProgress(Package* package)
 			else
 				totalDownloaded += itr.second.amountDownloaded;
 		}
-
 		uint32 pct10 = (uint32)(totalDownloaded * 1000ull / totalSize);
 		if (package->state.progress != pct10)
 		{

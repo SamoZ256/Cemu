@@ -614,7 +614,7 @@ static void _emitUniformAccessCode(LatteDecompilerShaderContext* shaderContext, 
 				uniformBufferIndex = aluInstruction->cfInstruction->cBank1Index;
 			}
 		}
-		LatteDecompilerRemappedUniformEntry_t* remappedUniformEntry = NULL;
+		LatteDecompilerRemappedUniformEntry_t* remappedUniformEntry = nullptr;
 		for(size_t i=0; i< shaderContext->shader->list_remappedUniformEntries.size(); i++)
 		{
 			LatteDecompilerRemappedUniformEntry_t* remappedUniformEntryItr = shaderContext->shader->list_remappedUniformEntries.data() + i;

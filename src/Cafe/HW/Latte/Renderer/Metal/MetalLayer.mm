@@ -6,12 +6,12 @@ void* CreateMetalLayer(void* handle, float& scaleX, float& scaleY)
 {
 	NSView* view = (NSView*)handle;
 
-	MetalView* childView = [[MetalView alloc] initWithFrame:view.bounds];
+	MetalView* childView = [[[MetalView alloc] initWithFrame:view.bounds] autorelease];
 	childView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 	childView.wantsLayer = YES;
 
 	[view addSubview:childView];
-
+    
 	const NSRect points = [childView frame];
     const NSRect pixels = [childView convertRectToBacking:points];
 
@@ -19,4 +19,5 @@ void* CreateMetalLayer(void* handle, float& scaleX, float& scaleY)
     scaleY = (float)(pixels.size.height / points.size.height);
 
 	return childView.layer;
+    
 }

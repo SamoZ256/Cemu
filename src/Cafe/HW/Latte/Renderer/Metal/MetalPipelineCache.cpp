@@ -441,11 +441,18 @@ void MetalPipelineCache::LoadPipelineFromCache(std::span<uint8> fileData)
 		}
 	}
 
+    
 	if (!pixelShader)
 	{
 		cemu_assert_debug(false);
 		return;
-	}
+        // possible nullprt deference condition in vertexShader if PixelShader is true, but vertexShader is still null (CLANG)
+    } else if (pixelShader){
+        if (vertexShader == nullptr) {
+            cemuLog_log(LogType::Force, "vertexShader was NULL");
+            return;
+        }
+    }
 
 	MetalAttachmentsInfo attachmentsInfo(*lcr, pixelShader);
 
