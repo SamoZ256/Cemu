@@ -291,7 +291,7 @@ uint32 MetalPipelineCache::BeginLoading(uint64 cacheTitleId)
 	}
 
 	// open cache file or create it
-	cemu_assert_debug(s_cache == nullptr);
+	//cemu_assert_debug(s_cache == nullptr);
 	s_cache = FileCache::Open(pathCacheFile, true, LatteShaderCache_getPipelineCacheExtraVersion(cacheTitleId));
 	if (!s_cache)
 	{

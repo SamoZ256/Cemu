@@ -85,6 +85,13 @@ static inline CFTimeInterval    GetMachAbsoluteTimeInSeconds()      { return (CF
 
 #pragma mark - Dear ImGui Metal C++ Backend API
 
+__attribute__((unused)) static inline void ETStackAutoRelease(void* object)
+{
+    (*(NS::Object**)object)->release();
+}
+
+#define NS_STACK_SCOPED __attribute__((cleanup(ETStackAutoRelease))) __attribute__((unused))
+
 bool ImGui_ImplMetal_Init(MTL::Device* device)
 {
     return ImGui_ImplMetal_Init((__bridge id<MTLDevice>)(device));
@@ -143,7 +150,7 @@ void ImGui_ImplMetal_NewFrame(MTLRenderPassDescriptor* renderPassDescriptor)
 {
     ImGui_ImplMetal_Data* bd = ImGui_ImplMetal_GetBackendData();
     IM_ASSERT(bd->SharedMetalContext != nil && "No Metal context. Did you call ImGui_ImplMetal_Init() ?");
-    bd->SharedMetalContext.framebufferDescriptor = [[[FramebufferDescriptor alloc] initWithRenderPassDescriptor:renderPassDescriptor] autorelease];
+        bd->SharedMetalContext.framebufferDescriptor = [[FramebufferDescriptor alloc] initWithRenderPassDescriptor:renderPassDescriptor];
 
     if (bd->SharedMetalContext.depthStencilState == nil)
         ImGui_ImplMetal_CreateDeviceObjects(bd->SharedMetalContext.device);
@@ -292,7 +299,6 @@ void ImGui_ImplMetal_RenderDrawData(ImDrawData* drawData, id<MTLCommandBuffer> c
         vertexBufferOffset += (size_t)cmd_list->VtxBuffer.Size * sizeof(ImDrawVert);
         indexBufferOffset += (size_t)cmd_list->IdxBuffer.Size * sizeof(ImDrawIdx);
     }
-
     [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>)
     {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -331,11 +337,11 @@ bool ImGui_ImplMetal_CreateFontsTexture(id<MTLDevice> device)
 #else
     textureDescriptor.storageMode = MTLStorageModeShared;
 #endif
-    id <MTLTexture> texture = [[device newTextureWithDescriptor:textureDescriptor] autorelease];
+    id <MTLTexture> texture = [device newTextureWithDescriptor:textureDescriptor];
     [texture replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)width, (NSUInteger)height) mipmapLevel:0 withBytes:pixels bytesPerRow:(NSUInteger)width * 4];
     bd->SharedMetalContext.fontTexture = texture;
     io.Fonts->SetTexID((__bridge void*)bd->SharedMetalContext.fontTexture); // ImTextureID == void*
-
+    [texture release]; texture = nil;
     return (bd->SharedMetalContext.fontTexture != nil);
 }
 
@@ -350,10 +356,10 @@ void ImGui_ImplMetal_DestroyFontsTexture()
 bool ImGui_ImplMetal_CreateDeviceObjects(id<MTLDevice> device)
 {
     ImGui_ImplMetal_Data* bd = ImGui_ImplMetal_GetBackendData();
-    MTLDepthStencilDescriptor* depthStencilDescriptor = [[[MTLDepthStencilDescriptor alloc] init] autorelease];
+    MTLDepthStencilDescriptor* depthStencilDescriptor = [[MTLDepthStencilDescriptor alloc] init];
     depthStencilDescriptor.depthWriteEnabled = NO;
     depthStencilDescriptor.depthCompareFunction = MTLCompareFunctionAlways;
-    bd->SharedMetalContext.depthStencilState = [[device newDepthStencilStateWithDescriptor:depthStencilDescriptor] autorelease];
+    bd->SharedMetalContext.depthStencilState = [device newDepthStencilStateWithDescriptor:depthStencilDescriptor];
     ImGui_ImplMetal_CreateFontsTexture(device);
 
     return true;
@@ -377,6 +383,11 @@ void ImGui_ImplMetal_DestroyDeviceObjects()
         _lastReuseTime = GetMachAbsoluteTimeInSeconds();
     }
     return self;
+}
+
+-(void)dealloc {
+    [_buffer release]; _buffer = nil;
+    [super dealloc];
 }
 @end
 
@@ -425,6 +436,9 @@ void ImGui_ImplMetal_DestroyDeviceObjects()
     other.depthPixelFormat   == self.depthPixelFormat &&
     other.stencilPixelFormat == self.stencilPixelFormat;
 }
+-(void)dealloc {
+    [super dealloc];
+}
 
 @end
 
@@ -455,7 +469,7 @@ void ImGui_ImplMetal_DestroyDeviceObjects()
             for (MetalBuffer* candidate in self.bufferCache)
                 if (candidate.lastReuseTime > self.lastBufferCachePurge)
                     [survivors addObject:candidate];
-            self.bufferCache = [[survivors mutableCopy] autorelease];
+            self.bufferCache = [survivors mutableCopy];
             self.lastBufferCachePurge = now;
         }
 
@@ -472,10 +486,9 @@ void ImGui_ImplMetal_DestroyDeviceObjects()
             return bestCandidate;
         }
     }
-
     // No luck; make a new buffer
-    id<MTLBuffer> backing = [[device newBufferWithLength:length options:MTLResourceStorageModeShared] autorelease];
-    return [[[MetalBuffer alloc] initWithBuffer:backing] autorelease];
+    id<MTLBuffer> backing = [device newBufferWithLength:length options:MTLResourceStorageModeShared];
+    return [[MetalBuffer alloc] initWithBuffer:backing];
 }
 
 // Bilinear sampling is required by default. Set 'io.Fonts->Flags |= ImFontAtlasFlags_NoBakedLines' or 'style.AntiAliasedLinesUseTex = false' to allow point/nearest sampling.
@@ -519,23 +532,27 @@ void ImGui_ImplMetal_DestroyDeviceObjects()
     "    return half4(in.color) * texColor;\n"
     "}\n";
 
-    id<MTLLibrary> library = [[device newLibraryWithSource:shaderSource options:nil error:&error] autorelease];
+    id<MTLLibrary> library = [device newLibraryWithSource:shaderSource options:nil error:&error];
     if (library == nil)
     {
         NSLog(@"Error: failed to create Metal library: %@", error);
         return nil;
     }
 
-    id<MTLFunction> vertexFunction = [[library newFunctionWithName:@"vertex_main"] autorelease];
-    id<MTLFunction> fragmentFunction = [[library newFunctionWithName:@"fragment_main"] autorelease];
+    id<MTLFunction> vertexFunction = [library newFunctionWithName:@"vertex_main"];
+    id<MTLFunction> fragmentFunction = [library newFunctionWithName:@"fragment_main"];
 
     if (vertexFunction == nil || fragmentFunction == nil)
     {
         NSLog(@"Error: failed to find Metal shader functions in library: %@", error);
+        [shaderSource release]; shaderSource = nil;
+        [library release]; library = nil;
+        [fragmentFunction release]; fragmentFunction = nil;
+        [vertexFunction release]; vertexFunction = nil;
         return nil;
     }
 
-    MTLVertexDescriptor* vertexDescriptor = [MTLVertexDescriptor vertexDescriptor];
+    MTLVertexDescriptor* vertexDescriptor = [[MTLVertexDescriptor alloc] init];
     vertexDescriptor.attributes[0].offset = IM_OFFSETOF(ImDrawVert, pos);
     vertexDescriptor.attributes[0].format = MTLVertexFormatFloat2; // position
     vertexDescriptor.attributes[0].bufferIndex = 0;
@@ -549,7 +566,7 @@ void ImGui_ImplMetal_DestroyDeviceObjects()
     vertexDescriptor.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
     vertexDescriptor.layouts[0].stride = sizeof(ImDrawVert);
 
-    MTLRenderPipelineDescriptor* pipelineDescriptor = [[[MTLRenderPipelineDescriptor alloc] init] autorelease];
+    MTLRenderPipelineDescriptor* pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
     pipelineDescriptor.vertexFunction = vertexFunction;
     pipelineDescriptor.fragmentFunction = fragmentFunction;
     pipelineDescriptor.vertexDescriptor = vertexDescriptor;
@@ -565,11 +582,35 @@ void ImGui_ImplMetal_DestroyDeviceObjects()
     pipelineDescriptor.depthAttachmentPixelFormat = self.framebufferDescriptor.depthPixelFormat;
     pipelineDescriptor.stencilAttachmentPixelFormat = self.framebufferDescriptor.stencilPixelFormat;
 
-    id<MTLRenderPipelineState> renderPipelineState = [[device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error] autorelease];
-    if (error != nil)
+    id<MTLRenderPipelineState> renderPipelineState = [device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
+    if (error != nil){
         NSLog(@"Error: failed to create Metal pipeline state: %@", error);
-
+        [error release]; error = nil;
+        [shaderSource release]; shaderSource = nil;
+        [library release]; library = nil;
+        [fragmentFunction release]; fragmentFunction = nil;
+        [vertexFunction release]; vertexFunction = nil;
+        [vertexDescriptor release]; vertexDescriptor = nil;
+        [pipelineDescriptor release]; pipelineDescriptor = nil;
+        [renderPipelineState release]; renderPipelineState = nil;
+        return nil;
+    }
+        [error release]; error = nil;
+        [shaderSource release]; shaderSource = nil;
+        [library release]; library = nil;
+        [fragmentFunction release]; fragmentFunction = nil;
+        [vertexFunction release]; vertexFunction = nil;
+        [vertexDescriptor release]; vertexDescriptor = nil;
+        [pipelineDescriptor release]; pipelineDescriptor = nil;
     return renderPipelineState;
 }
-
+-(void)dealloc {
+    [_bufferCache release]; _bufferCache = nil;
+    [_depthStencilState release]; _depthStencilState = nil;
+    [_device release]; _device = nil;
+    [_fontTexture release]; _fontTexture = nil;
+    [_framebufferDescriptor release]; _framebufferDescriptor = nil;
+    [_renderPipelineStateCache release]; _renderPipelineStateCache = nil;
+    [super dealloc];
+}
 @end

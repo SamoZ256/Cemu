@@ -25,6 +25,10 @@ public:
 		}
 		// enlarge pool
 		increasePoolSize();
+        T* allocatedObj = m_nextFreeObject;
+        m_nextFreeObject = *(T**)allocatedObj;
+        new (allocatedObj) T(std::forward<Ts>(args)...);
+        return allocatedObj;
 	}
 
 	void freeObj(T* obj)
